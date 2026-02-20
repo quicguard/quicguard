@@ -1,0 +1,77 @@
+[package]
+name = "quicguard"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+# Enable io_uring on Linux for better I/O performance
+io-uring = ["io-uring-crate"]
+
+[[bin]]
+name = "client"
+path = "src/client.rs"
+
+[[bin]]
+name = "server"
+path = "src/server.rs"
+
+[[bin]]
+name = "masque-vpn"
+path = "src/main.rs"
+
+[dependencies]
+# QUIC implementation
+s2n-quic = "1"
+
+# io_uring support (Linux only)
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring-crate = { package = "io-uring", version = "0.7", optional = true }
+tokio-uring = "0.5.0"
+
+# Async runtime
+tokio = { version = "1", features = ["full", "sync", "rt-multi-thread", "macros", "io-util", "net", "signal"] }
+
+# TUN interface
+tun = { version = "0.6", features = ["async"] }
+
+# Low-level OS interface 
+libc = "0.2"
+
+# Networking
+bytes = "1"
+
+# Serialization for MASQUE-like protocol
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# IP packet parsing
+etherparse = "0.14"
+
+# Certificates
+rustls = "0.21"
+rustls-pemfile = "1"
+rcgen = "0.12"
+time = "0.3"
+
+[dev-dependencies]
+# Benchmarking
+criterion = { version = "0.5", features = ["async_tokio"] }
+tokio-test = "0.4"
+rand = "0.8"
+histogram = "0.9"
+
+[[bench]]
+name = "server_benchmark"
+harness = false
