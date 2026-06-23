@@ -198,10 +198,7 @@ pub fn extract_dest_ip(packet: &[u8]) -> Option<IpAddr> {
                 return None;
             }
             Some(IpAddr::V4(Ipv4Addr::new(
-                packet[16],
-                packet[17],
-                packet[18],
-                packet[19],
+                packet[16], packet[17], packet[18], packet[19],
             )))
         }
         6 => {
@@ -231,10 +228,7 @@ pub fn extract_src_ip(packet: &[u8]) -> Option<IpAddr> {
                 return None;
             }
             Some(IpAddr::V4(Ipv4Addr::new(
-                packet[12],
-                packet[13],
-                packet[14],
-                packet[15],
+                packet[12], packet[13], packet[14], packet[15],
             )))
         }
         6 => {

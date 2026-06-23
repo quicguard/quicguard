@@ -5,14 +5,11 @@ use std::net::Ipv4Addr;
 use std::process::Command;
 use tracing::{debug, info, warn};
 
-
-
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
 
 use tun::AsyncDevice;
 
 use std::os::unix::io::{AsRawFd, RawFd};
-
 
 use std::io::{Read, Write};
 
@@ -89,11 +86,9 @@ impl TunReader {
                 debug!("Read {} bytes from TUN", n);
                 Ok(n)
             }
-           
         }
     }
 }
-
 
 impl TunWriter {
     /// Write a packet to the TUN device
@@ -104,31 +99,24 @@ impl TunWriter {
                 debug!("Wrote {} bytes to TUN", n);
                 Ok(n)
             }
-            
         }
     }
 }
-
-
 
 pub struct TunDevice {
     inner: TunDeviceInner,
     name: String,
 }
 
-
 enum TunDeviceInner {
     Standard(AsyncDevice),
 }
 
 impl TunDevice {
-    /// Create a new TUN device 
+    /// Create a new TUN device
     pub async fn new(name: &str) -> Result<Self> {
         let mut config = tun::Configuration::default();
-        config
-            .name(name)
-            .layer(tun::Layer::L3)
-            .up();
+        config.name(name).layer(tun::Layer::L3).up();
 
         #[cfg(target_os = "linux")]
         config.platform(|config| {
@@ -136,27 +124,30 @@ impl TunDevice {
         });
 
         let device = tun::create_as_async(&config)
-            .context("Failed to create TUN device")?;
+            .context(format!("Failed to create TUN device: {}", name))?;
 
         info!("Created TUN device: {} (tokio async)", name);
 
         Ok(Self {
             inner: TunDeviceInner::Standard(device),
-            name: name.to_string()
+            name: name.to_string(),
         })
     }
 
-   
     /// Split the TUN device into separate read and write halves
     pub fn split(self) -> (TunReader, TunWriter) {
         match self.inner {
             TunDeviceInner::Standard(device) => {
                 let (reader, writer) = tokio::io::split(device);
                 (
-                    TunReader { inner: TunReaderInner::Standard(reader) },
-                    TunWriter { inner: TunWriterInner::Standard(writer) },
+                    TunReader {
+                        inner: TunReaderInner::Standard(reader),
+                    },
+                    TunWriter {
+                        inner: TunWriterInner::Standard(writer),
+                    },
                 )
-            }            
+            }
         }
     }
 
@@ -166,11 +157,8 @@ impl TunDevice {
     }
 }
 
-
-
 unsafe impl Sync for TunReader {}
 unsafe impl Send for TunWriter {}
-
 
 impl TunDevice {
     /// Configure the TUN device with IP address and bring it up
@@ -178,7 +166,13 @@ impl TunDevice {
     pub fn configure(name: &str, ip: Ipv4Addr, netmask: Ipv4Addr, mtu: u16) -> Result<()> {
         // Set IP address
         let output = Command::new("ip")
-            .args(["addr", "add", &format!("{}/{}", ip, netmask_to_cidr(netmask)), "dev", name])
+            .args([
+                "addr",
+                "add",
+                &format!("{}/{}", ip, netmask_to_cidr(netmask)),
+                "dev",
+                name,
+            ])
             .output()
             .context("Failed to run ip addr add")?;
 
@@ -218,7 +212,10 @@ impl TunDevice {
 
         info!(
             "Configured TUN device {} with IP {}/{}, MTU {}",
-            name, ip, netmask_to_cidr(netmask), mtu
+            name,
+            ip,
+            netmask_to_cidr(netmask),
+            mtu
         );
 
         Ok(())
@@ -322,14 +319,7 @@ pub fn setup_nat(tun_network: &str, external_interface: &str) -> Result<()> {
 
     // Allow forwarding for tunnel
     let output = Command::new("iptables")
-        .args([
-            "-A",
-            "FORWARD",
-            "-s",
-            tun_network,
-            "-j",
-            "ACCEPT",
-        ])
+        .args(["-A", "FORWARD", "-s", tun_network, "-j", "ACCEPT"])
         .output()
         .context("Failed to run iptables forward")?;
 
@@ -341,14 +331,7 @@ pub fn setup_nat(tun_network: &str, external_interface: &str) -> Result<()> {
     }
 
     let output = Command::new("iptables")
-        .args([
-            "-A",
-            "FORWARD",
-            "-d",
-            tun_network,
-            "-j",
-            "ACCEPT",
-        ])
+        .args(["-A", "FORWARD", "-d", tun_network, "-j", "ACCEPT"])
         .output()
         .context("Failed to run iptables forward return")?;
 

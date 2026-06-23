@@ -1,9 +1,9 @@
 // QuicGuard using HTTP/3 QUIC
 // This file provides a unified entry point for both client and server modes
 
+mod certs;
 mod protocol;
 mod tun_device;
-mod certs;
 
 use clap::{Parser, Subcommand};
 use std::net::{Ipv4Addr, SocketAddr};
@@ -159,7 +159,6 @@ fn generate_certs(output: &PathBuf, hostname: &str) -> anyhow::Result<()> {
     println!("  Server cert: {:?}", cert_path);
     println!("  Server key:  {:?}", key_path);
     println!("  CA cert:     {:?}", ca_path);
-    
+
     Ok(())
 }
-

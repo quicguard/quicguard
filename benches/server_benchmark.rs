@@ -104,9 +104,7 @@ impl BenchStats {
 }
 
 /// Create a mock QUIC client for benchmarking with timeout
-async fn create_bench_client(
-    config: &BenchConfig,
-) -> anyhow::Result<s2n_quic::Connection> {
+async fn create_bench_client(config: &BenchConfig) -> anyhow::Result<s2n_quic::Connection> {
     use s2n_quic::client::Connect;
     use s2n_quic::provider::limits::Limits;
     use s2n_quic::Client;
@@ -126,14 +124,11 @@ async fn create_bench_client(
     let connect = Connect::new(config.server_addr).with_server_name("localhost");
 
     // Add timeout for connection attempt
-    let connection = tokio::time::timeout(
-        Duration::from_secs(1),
-        client.connect(connect)
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("Connection timeout - is the server running?"))?
-    .map_err(|e| anyhow::anyhow!("Connection failed: {}", e))?;
-    
+    let connection = tokio::time::timeout(Duration::from_secs(1), client.connect(connect))
+        .await
+        .map_err(|_| anyhow::anyhow!("Connection timeout - is the server running?"))?
+        .map_err(|e| anyhow::anyhow!("Connection failed: {}", e))?;
+
     Ok(connection)
 }
 
@@ -186,10 +181,10 @@ async fn perform_handshake(
 fn generate_packet(size: usize) -> Vec<u8> {
     use rand::Rng;
     let mut rng = rand::thread_rng();
-    
+
     // Create a minimal IPv4 header + payload
     let mut packet = vec![0u8; size.max(20)];
-    
+
     // IPv4 header
     packet[0] = 0x45; // Version 4, IHL 5
     packet[1] = 0x00; // DSCP/ECN
@@ -197,14 +192,14 @@ fn generate_packet(size: usize) -> Vec<u8> {
     packet[2..4].copy_from_slice(&total_len.to_be_bytes());
     packet[8] = 64; // TTL
     packet[9] = 17; // Protocol: UDP
-    // Source IP: 10.0.0.2
+                    // Source IP: 10.0.0.2
     packet[12..16].copy_from_slice(&[10, 0, 0, 2]);
     // Dest IP: 8.8.8.8
     packet[16..20].copy_from_slice(&[8, 8, 8, 8]);
-    
+
     // Random payload
     rng.fill(&mut packet[20..]);
-    
+
     packet
 }
 
@@ -233,10 +228,10 @@ fn bench_single_connection_throughput(c: &mut Criterion) {
     }
 
     let mut group = c.benchmark_group("single_connection_throughput");
-    
+
     for packet_size in [64, 256, 512, 1024, 1400].iter() {
         group.throughput(Throughput::Bytes(*packet_size as u64));
-        
+
         group.bench_with_input(
             BenchmarkId::new("packet_size", packet_size),
             packet_size,
@@ -244,7 +239,7 @@ fn bench_single_connection_throughput(c: &mut Criterion) {
                 b.to_async(&rt).iter(|| async {
                     let config = BenchConfig::default();
                     let mut connection = create_bench_client(&config).await.unwrap();
-                    let (mut recv_stream, mut send_stream) = 
+                    let (mut recv_stream, mut send_stream) =
                         perform_handshake(&mut connection).await.unwrap();
 
                     let packet = generate_packet(size);
@@ -263,7 +258,7 @@ fn bench_single_connection_throughput(c: &mut Criterion) {
             },
         );
     }
-    
+
     group.finish();
 }
 
@@ -275,9 +270,7 @@ fn bench_sustained_throughput(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let config = BenchConfig::default();
 
-    let server_available = rt.block_on(async {
-        create_bench_client(&config).await.is_ok()
-    });
+    let server_available = rt.block_on(async { create_bench_client(&config).await.is_ok() });
 
     if !server_available {
         eprintln!("⚠️  Server not available for sustained throughput test");
@@ -331,9 +324,7 @@ fn bench_connection_latency(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let config = BenchConfig::default();
 
-    let server_available = rt.block_on(async {
-        create_bench_client(&config).await.is_ok()
-    });
+    let server_available = rt.block_on(async { create_bench_client(&config).await.is_ok() });
 
     if !server_available {
         eprintln!("⚠️  Server not available for connection latency test");
@@ -348,10 +339,10 @@ fn bench_connection_latency(c: &mut Criterion) {
         b.to_async(&rt).iter(|| async {
             let config = BenchConfig::default();
             let start = Instant::now();
-            
+
             let mut connection = create_bench_client(&config).await.unwrap();
             let _streams = perform_handshake(&mut connection).await.unwrap();
-            
+
             black_box(start.elapsed())
         });
     });
@@ -367,9 +358,7 @@ fn bench_concurrent_connections(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
     let config = BenchConfig::default();
 
-    let server_available = rt.block_on(async {
-        create_bench_client(&config).await.is_ok()
-    });
+    let server_available = rt.block_on(async { create_bench_client(&config).await.is_ok() });
 
     if !server_available {
         eprintln!("⚠️  Server not available for concurrent connections test");
@@ -388,7 +377,7 @@ fn bench_concurrent_connections(c: &mut Criterion) {
                 b.to_async(&rt).iter(|| async {
                     let barrier = Arc::new(Barrier::new(count));
                     let stats = Arc::new(BenchStats::new());
-                    
+
                     let mut handles = Vec::new();
 
                     for _ in 0..count {
@@ -404,7 +393,7 @@ fn bench_concurrent_connections(c: &mut Criterion) {
                                 Ok(c) => c,
                                 Err(_) => return,
                             };
-                            
+
                             let (_recv, mut send) = match perform_handshake(&mut connection).await {
                                 Ok(s) => s,
                                 Err(_) => return,
@@ -417,7 +406,7 @@ fn bench_concurrent_connections(c: &mut Criterion) {
 
                             for _ in 0..10 {
                                 let start = Instant::now();
-                                
+
                                 if send
                                     .write_all(&(encoded.len() as u32).to_be_bytes())
                                     .await
@@ -428,7 +417,7 @@ fn bench_concurrent_connections(c: &mut Criterion) {
                                 if send.write_all(&encoded).await.is_err() {
                                     break;
                                 }
-                                
+
                                 stats.record_send(encoded.len() as u64);
                                 stats.record_latency(start.elapsed().as_nanos() as u64);
                             }
@@ -459,19 +448,15 @@ fn bench_message_encoding(c: &mut Criterion) {
 
     for size in [64, 256, 1024, 1400].iter() {
         let packet = generate_packet(*size);
-        
+
         group.throughput(Throughput::Bytes(*size as u64));
-        
-        group.bench_with_input(
-            BenchmarkId::new("encode", size),
-            &packet,
-            |b, packet| {
-                b.iter(|| {
-                    let msg = Message::ip_packet(black_box(packet.clone()));
-                    black_box(msg.encode())
-                });
-            },
-        );
+
+        group.bench_with_input(BenchmarkId::new("encode", size), &packet, |b, packet| {
+            b.iter(|| {
+                let msg = Message::ip_packet(black_box(packet.clone()));
+                black_box(msg.encode())
+            });
+        });
     }
 
     for size in [64, 256, 1024, 1400].iter() {
@@ -479,15 +464,9 @@ fn bench_message_encoding(c: &mut Criterion) {
         let msg = Message::ip_packet(packet);
         let encoded = msg.encode();
 
-        group.bench_with_input(
-            BenchmarkId::new("decode", size),
-            &encoded,
-            |b, encoded| {
-                b.iter(|| {
-                    black_box(Message::decode(black_box(encoded.clone())))
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("decode", size), &encoded, |b, encoded| {
+            b.iter(|| black_box(Message::decode(black_box(encoded.clone()))));
+        });
     }
 
     group.finish();
@@ -502,16 +481,10 @@ fn bench_packet_generation(c: &mut Criterion) {
 
     for size in [64, 256, 1024, 1400, 9000].iter() {
         group.throughput(Throughput::Bytes(*size as u64));
-        
-        group.bench_with_input(
-            BenchmarkId::new("generate", size),
-            size,
-            |b, &size| {
-                b.iter(|| {
-                    black_box(generate_packet(size))
-                });
-            },
-        );
+
+        group.bench_with_input(BenchmarkId::new("generate", size), size, |b, &size| {
+            b.iter(|| black_box(generate_packet(size)));
+        });
     }
 
     group.finish();
@@ -567,12 +540,12 @@ fn run_detailed_benchmark() {
 
         for _ in 0..1000 {
             let pkt_start = Instant::now();
-            
+
             send.write_all(&(encoded.len() as u32).to_be_bytes())
                 .await
                 .unwrap();
             send.write_all(&encoded).await.unwrap();
-            
+
             stats_clone.record_send(encoded.len() as u64);
             stats_clone.record_latency(pkt_start.elapsed().as_nanos() as u64);
         }
@@ -582,7 +555,8 @@ fn run_detailed_benchmark() {
 
     let bytes_sent = stats.bytes_sent.load(Ordering::Relaxed);
     let throughput_mbps = (bytes_sent as f64 * 8.0) / (duration.as_secs_f64() * 1_000_000.0);
-    let packets_per_sec = stats.packets_sent.load(Ordering::Relaxed) as f64 / duration.as_secs_f64();
+    let packets_per_sec =
+        stats.packets_sent.load(Ordering::Relaxed) as f64 / duration.as_secs_f64();
 
     println!("Duration: {:?}", duration);
     println!("Throughput: {:.2} Mbps", throughput_mbps);

@@ -21,8 +21,18 @@ name = "masque-vpn"
 path = "src/main.rs"
 
 [dependencies]
+async-stream = "0.3.6"
+futures = "0.3.32"
+h3 = "0.0.8"
+http = "1.4.2"
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http-body-util = "0.1"
+
 # QUIC implementation
-s2n-quic = "1"
+s2n-quic = { version = "1" }
+#s2n-quic = { version = "1",  features = ["provider-tls-rustls",] }
+
 
 # io_uring support (Linux only)
 [target.'cfg(target_os = "linux")'.dependencies]

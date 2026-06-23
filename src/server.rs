@@ -1,8 +1,10 @@
 // QuicGuard Uses s2n-quic for HTTP/3 QUIC transport
 
-mod protocol;
-mod tun_device;
 mod certs;
+mod http3;
+mod protocol;
+mod s2n_h3;
+mod tun_device;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -70,7 +72,6 @@ struct Args {
     /// Enable verbose logging
     #[arg(short, long)]
     verbose: bool,
-
 }
 
 /// Client session information
@@ -106,16 +107,11 @@ impl IpPool {
         // Allocate next available IP
         let ip = self.next_ip;
         self.allocated.insert(ip, client_id);
-        
+
         // Increment for next allocation
         let octets = self.next_ip.octets();
-        self.next_ip = Ipv4Addr::new(
-            octets[0],
-            octets[1],
-            octets[2],
-            octets[3].wrapping_add(1),
-        );
-        
+        self.next_ip = Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3].wrapping_add(1));
+
         Some(ip)
     }
 
@@ -131,39 +127,41 @@ impl IpPool {
 type ClientMap = Arc<RwLock<HashMap<[u8; 16], ClientSession>>>;
 type IpToClientMap = Arc<RwLock<HashMap<Ipv4Addr, [u8; 16]>>>;
 
-
 fn main() -> Result<()> {
     let args = Args::parse();
 
     // Initialize logging
     let log_level = if args.verbose { "debug" } else { "info" };
-    tracing_subscriber::fmt()
-        .with_env_filter(log_level)
-        .init();
+    tracing_subscriber::fmt().with_env_filter(log_level).init();
 
     info!("Starting QuicGuard");
     info!("Listen address: {}", args.listen);
 
     // Run the server
-    tokio_uring::start(async {
-    run_server(args).await
-    })
+    tokio_uring::start(async { run_server(args).await })
 }
 
 async fn run_server(args: Args) -> Result<()> {
     // Generate certificates if requested and not present
     if args.generate_certs {
         certs::generate_certificates(&args.cert, &args.key, "localhost")?;
-        
+
         // Also generate CA cert for client
-        let ca_path = args.cert.parent().unwrap_or(std::path::Path::new(".")).join("ca.pem");
+        let ca_path = args
+            .cert
+            .parent()
+            .unwrap_or(std::path::Path::new("."))
+            .join("ca.pem");
         std::fs::copy(&args.cert, &ca_path)?;
         info!("Copied certificate to {:?} for client use", ca_path);
     }
 
     // Enable IP forwarding
     if let Err(e) = enable_ip_forwarding() {
-        warn!("Failed to enable IP forwarding: {}. You may need root privileges.", e);
+        warn!(
+            "Failed to enable IP forwarding: {}. You may need root privileges.",
+            e
+        );
     }
 
     // Setup NAT if requested
@@ -187,12 +185,21 @@ async fn run_server(args: Args) -> Result<()> {
     // Configure connection limits for better performance
     let limits = Limits::new()
         .with_max_idle_timeout(Duration::from_secs(30))?
-        .with_data_window(2 * 1024 * 1024)?  // 2MB receive window
-        .with_max_send_buffer_size(2 * 1024 * 1024)?;  // 2MB send buffer
+        .with_data_window(2 * 1024 * 1024)? // 2MB receive window
+        .with_max_send_buffer_size(2 * 1024 * 1024)?; // 2MB send buffer
+
+    let mut tls = s2n_quic::provider::tls::default::Server::builder();
+    tls.config_mut()
+        .set_application_protocol_preference(["quicguard/0.1", "h3"])?;
+    // confirmed signature: set_application_protocol_preference<P, I>(&mut self, protocols: P)
+    //   where P: IntoIterator<Item = I>, I: AsRef<[u8]>
+    let tls = tls
+        .with_certificate(args.cert.as_path(), args.key.as_path())?
+        .build()?;
 
     // Build QUIC server with tuned limits
     let server = Server::builder()
-        .with_tls((args.cert.as_path(), args.key.as_path()))?
+        .with_tls(tls)?
         .with_io(args.listen)?
         .with_limits(limits)?
         .start()
@@ -207,7 +214,7 @@ async fn run_server(args: Args) -> Result<()> {
 
     // Channel for sending packets from TUN to clients (not used in current impl but reserved)
     let (_tun_broadcast_tx, _) = tokio::sync::broadcast::channel::<(Ipv4Addr, Vec<u8>)>(1000);
-    
+
     // Wrap TUN reader in Arc<Mutex> for the reader task (only one reader)
     let tun_reader = Arc::new(Mutex::new(tun_reader));
     // Wrap TUN writer in Arc<Mutex> for sharing among client handlers
@@ -291,6 +298,16 @@ async fn run_server(args: Args) -> Result<()> {
     Ok(())
 }
 
+async fn read_message(recv_stream: &mut s2n_quic::stream::ReceiveStream) -> Result<Message> {
+    let mut len_buf = [0u8; 4];
+    recv_stream.read_exact(&mut len_buf).await?;
+    let msg_len = u32::from_be_bytes(len_buf) as usize;
+    let mut msg_buf = vec![0u8; msg_len];
+    recv_stream.read_exact(&mut msg_buf).await?;
+    let msg = Message::decode(Bytes::from(msg_buf))
+        .map_err(|e| anyhow::anyhow!("Failed to decode message: {}", e))?;
+    return Ok(msg);
+}
 async fn handle_connection(
     mut connection: s2n_quic::Connection,
     clients: ClientMap,
@@ -302,187 +319,252 @@ async fn handle_connection(
 ) -> Result<()> {
     let remote_addr = connection.remote_addr()?;
     info!("New connection from {}", remote_addr);
+    let alpn_byte = connection
+        .application_protocol()
+        .context("Faild to read ALPN")?;
+    let alpn = std::str::from_utf8(&alpn_byte)?;
+    info!("ALPN: {}", alpn);
+    if alpn == "h3" {
+        //////////////////////////////////////////////////////////////////////////////////////////////
 
-    // Keep connection alive
-    connection.keep_alive(true)?;
+        // Wrap the raw s2n-quic connection in the h3 adapter
+        let h3_conn = s2n_h3::H3Connection::new(connection);
+        info!("h3_conn created");
 
-    // Accept bidirectional stream
-    let stream = connection
-        .accept_bidirectional_stream()
-        .await
-        .context("Failed to accept stream")?
-        .ok_or_else(|| anyhow::anyhow!("No stream available"))?;
+        // Build the h3 server connection
+        let mut h3_server_conn = h3::server::Connection::<_, Bytes>::new(h3_conn)
+            .await
+            .context("Failed to build h3 server connection")?;
+        info!("h3_server_conn created");
 
-    let (mut recv_stream, mut send_stream) = stream.split();
+        // Build the hyper client once
+        use hyper_util::client::legacy::connect::HttpConnector;
+        use hyper_util::client::legacy::Client;
+        use hyper_util::rt::TokioExecutor;
+        type HttpClient =
+            Client<HttpConnector, http_body_util::combinators::BoxBody<Bytes, std::io::Error>>;
+        let client: HttpClient = Client::builder(TokioExecutor::new()).build(HttpConnector::new());
 
-    // Read client hello
-    let mut len_buf = [0u8; 4];
-    recv_stream.read_exact(&mut len_buf).await?;
-    let msg_len = u32::from_be_bytes(len_buf) as usize;
-
-    let mut msg_buf = vec![0u8; msg_len];
-    recv_stream.read_exact(&mut msg_buf).await?;
-
-    let msg = Message::decode(Bytes::from(msg_buf))
-        .map_err(|e| anyhow::anyhow!("Failed to decode message: {}", e))?;
-
-    if msg.msg_type != MessageType::ClientHello {
-        anyhow::bail!("Expected ClientHello, got {:?}", msg.msg_type);
-    }
-
-    let client_hello = msg
-        .parse_client_hello()
-        .map_err(|e| anyhow::anyhow!("Failed to parse ClientHello: {}", e))?;
-
-    info!("ClientHello from {:?}", client_hello.client_id);
-
-    // Allocate IP for client
-    let assigned_ip = {
-        let mut pool = ip_pool.lock().await;
-        pool.allocate(client_hello.client_id, client_hello.requested_ip)
-            .ok_or_else(|| anyhow::anyhow!("Failed to allocate IP"))?
-    };
-
-    info!("Assigned IP {} to client", assigned_ip);
-
-    // Send server hello
-    let server_hello = Message::server_hello(
-        assigned_ip,
-        server_ip,
-        subnet_mask,
-        vec![Ipv4Addr::new(8, 8, 8, 8)], // DNS
-    );
-    let encoded = server_hello.encode();
-    send_stream
-        .write_all(&(encoded.len() as u32).to_be_bytes())
-        .await?;
-    send_stream.write_all(&encoded).await?;
-
-    // Create channel for sending packets to this client
-    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(1000);
-
-    // Register client session
-    let session = ClientSession {
-        client_id: client_hello.client_id,
-        assigned_ip,
-        tx,
-    };
-
-    {
-        let mut clients = clients.write().await;
-        clients.insert(client_hello.client_id, session);
-    }
-
-    {
-        let mut ip_map = ip_to_client.write().await;
-        ip_map.insert(assigned_ip, client_hello.client_id);
-    }
-
-    let client_id = client_hello.client_id;
-    let clients_cleanup = Arc::clone(&clients);
-    let ip_to_client_cleanup = Arc::clone(&ip_to_client);
-    let ip_pool_cleanup = Arc::clone(&ip_pool);
-
-    // Cleanup function
-    let cleanup = || async move {
-        info!("Cleaning up client session for IP {}", assigned_ip);
-        {
-            let mut clients = clients_cleanup.write().await;
-            clients.remove(&client_id);
-        }
-        {
-            let mut ip_map = ip_to_client_cleanup.write().await;
-            ip_map.remove(&assigned_ip);
-        }
-        {
-            let mut pool = ip_pool_cleanup.lock().await;
-            pool.release(assigned_ip);
-        }
-    };
-
-    // Task: Send packets from channel to QUIC stream
-    let quic_sender = tokio::spawn(async move {
-        while let Some(data) = rx.recv().await {
-            let msg = Message::ip_packet(data);
-            let encoded = msg.encode();
-
-            if let Err(e) = send_stream
-                .write_all(&(encoded.len() as u32).to_be_bytes())
-                .await
-            {
-                error!("Error writing to QUIC: {}", e);
-                break;
-            }
-            if let Err(e) = send_stream.write_all(&encoded).await {
-                error!("Error writing to QUIC: {}", e);
-                break;
-            }
-        }
-    });
-
-    // Task: Receive packets from QUIC stream and write to TUN
-    let tun_writer_for_recv = Arc::clone(&tun_writer);
-    let quic_receiver = tokio::spawn(async move {
-        let mut len_buf = [0u8; 4];
+        // Accept requests in a loop (handles keep-alive / multiple requests per connection)
         loop {
-            match recv_stream.read_exact(&mut len_buf).await {
-                Ok(_) => {}
-                Err(e) => {
-                    info!("Client disconnected: {}", e);
-                    break;
-                }
-            }
+            match h3_server_conn.accept().await {
+                Ok(Some(resolver)) => {
+                    info!("resolver created");
+                    let client = client.clone();
 
-            let msg_len = u32::from_be_bytes(len_buf) as usize;
-            if msg_len > MAX_PACKET_SIZE + 100 {
-                error!("Message too large: {} bytes", msg_len);
-                continue;
-            }
+                    // Drive the connection AND the request together.
+                    // h3_server_conn.accept() keeps polling the QUIC state machine,
+                    // which is what actually flushes the send buffer after finish().
+                    // Without this, dropping h3_server_conn tears down the connection
+                    // before QUIC has delivered the last bytes to the peer.
+                    let result = tokio::join!(
+                        // Left: keep the connection driver alive
+                        async {
+                            // After the request task finishes we'll break out of the
+                            // loop, but until then we must keep polling accept() so
+                            // the QUIC layer can flush outstanding data.
+                            h3_server_conn.accept().await
+                        },
+                        // Right: handle the request
+                        async {
+                            http3::process_h3_request(resolver, client, "127.0.0.1:1025").await
+                        }
+                    );
 
-            let mut msg_buf = vec![0u8; msg_len];
-            match recv_stream.read_exact(&mut msg_buf).await {
-                Ok(_) => {}
-                Err(e) => {
-                    info!("Client disconnected: {}", e);
-                    break;
-                }
-            }
-
-            match Message::decode(Bytes::from(msg_buf)) {
-                Ok(msg) => match msg.msg_type {
-                    MessageType::IpPacket => {
-                        debug!("Received {} bytes from client", msg.payload.len());
-                        let mut tun = tun_writer_for_recv.lock().await;
-                        if let Err(e) = tun.write(&msg.payload).await {
-                            error!("Error writing to TUN: {}", e);
+                    match result {
+                        (_, Ok(url)) => {
+                            info!("HTTP/3 request URL: {}", url);
+                        }
+                        (_, Err(e)) => {
+                            tracing::error!("request failed: {e}");
                         }
                     }
-                    MessageType::Keepalive => {
-                        debug!("Received keepalive from client");
-                    }
-                    MessageType::Disconnect => {
-                        info!("Client requested disconnect");
-                        break;
-                    }
-                    _ => {
-                        warn!("Unexpected message type: {:?}", msg.msg_type);
-                    }
-                },
+                }
+                Ok(None) => {
+                    info!("h3 connection closed");
+                    break;
+                }
                 Err(e) => {
-                    error!("Failed to decode message: {}", e);
+                    tracing::error!("h3 accept error: {e}");
+                    break;
                 }
             }
         }
-    });
 
-    // Wait for either task to complete
-    tokio::select! {
-        _ = quic_sender => {},
-        _ = quic_receiver => {},
+        //////////////////////////////////////////////////////////////////////////////////////////////
+    } else {
+        // Keep connection alive
+        connection.keep_alive(true)?;
+
+        // Accept bidirectional stream
+        let stream = connection
+            .accept_bidirectional_stream()
+            .await
+            .context("Failed to accept stream")?
+            .ok_or_else(|| anyhow::anyhow!("No stream available"))?;
+
+        let (mut recv_stream, mut send_stream) = stream.split();
+
+        // Read client hello
+        let msg = read_message(&mut recv_stream).await;
+
+        //It's vpn request
+        info!("Connection type: VPN");
+        let msg = msg.unwrap();
+        let client_hello = msg
+            .parse_client_hello()
+            .map_err(|e| anyhow::anyhow!("Failed to parse ClientHello: {}", e))?;
+
+        info!("ClientHello from {:?}", client_hello.client_id);
+
+        // Allocate IP for client
+        let assigned_ip = {
+            let mut pool = ip_pool.lock().await;
+            pool.allocate(client_hello.client_id, client_hello.requested_ip)
+                .ok_or_else(|| anyhow::anyhow!("Failed to allocate IP"))?
+        };
+
+        info!("Assigned IP {} to client", assigned_ip);
+
+        // Send server hello
+        let server_hello = Message::server_hello(
+            assigned_ip,
+            server_ip,
+            subnet_mask,
+            vec![Ipv4Addr::new(8, 8, 8, 8)], // DNS
+        );
+        let encoded = server_hello.encode();
+        send_stream
+            .write_all(&(encoded.len() as u32).to_be_bytes())
+            .await?;
+        send_stream.write_all(&encoded).await?;
+
+        // Create channel for sending packets to this client
+        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(1000);
+
+        // Register client session
+        let session = ClientSession {
+            client_id: client_hello.client_id,
+            assigned_ip,
+            tx,
+        };
+
+        {
+            let mut clients = clients.write().await;
+            clients.insert(client_hello.client_id, session);
+        }
+
+        {
+            let mut ip_map = ip_to_client.write().await;
+            ip_map.insert(assigned_ip, client_hello.client_id);
+        }
+
+        let client_id = client_hello.client_id;
+        let clients_cleanup = Arc::clone(&clients);
+        let ip_to_client_cleanup = Arc::clone(&ip_to_client);
+        let ip_pool_cleanup = Arc::clone(&ip_pool);
+
+        // Cleanup function
+        let cleanup = || async move {
+            info!("Cleaning up client session for IP {}", assigned_ip);
+            {
+                let mut clients = clients_cleanup.write().await;
+                clients.remove(&client_id);
+            }
+            {
+                let mut ip_map = ip_to_client_cleanup.write().await;
+                ip_map.remove(&assigned_ip);
+            }
+            {
+                let mut pool = ip_pool_cleanup.lock().await;
+                pool.release(assigned_ip);
+            }
+        };
+
+        // Task: Send packets from channel to QUIC stream
+        let quic_sender = tokio::spawn(async move {
+            while let Some(data) = rx.recv().await {
+                let msg = Message::ip_packet(data);
+                let encoded = msg.encode();
+
+                if let Err(e) = send_stream
+                    .write_all(&(encoded.len() as u32).to_be_bytes())
+                    .await
+                {
+                    error!("Error writing to QUIC: {}", e);
+                    break;
+                }
+                if let Err(e) = send_stream.write_all(&encoded).await {
+                    error!("Error writing to QUIC: {}", e);
+                    break;
+                }
+            }
+        });
+
+        // Task: Receive packets from QUIC stream and write to TUN
+        let tun_writer_for_recv = Arc::clone(&tun_writer);
+        let quic_receiver = tokio::spawn(async move {
+            let mut len_buf = [0u8; 4];
+            loop {
+                match recv_stream.read_exact(&mut len_buf).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        info!("Client disconnected: {}", e);
+                        break;
+                    }
+                }
+
+                let msg_len = u32::from_be_bytes(len_buf) as usize;
+                if msg_len > MAX_PACKET_SIZE + 100 {
+                    error!("Message too large: {} bytes", msg_len);
+                    continue;
+                }
+
+                let mut msg_buf = vec![0u8; msg_len];
+                match recv_stream.read_exact(&mut msg_buf).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        info!("Client disconnected: {}", e);
+                        break;
+                    }
+                }
+
+                match Message::decode(Bytes::from(msg_buf)) {
+                    Ok(msg) => match msg.msg_type {
+                        MessageType::IpPacket => {
+                            debug!("Received {} bytes from client", msg.payload.len());
+                            let mut tun = tun_writer_for_recv.lock().await;
+                            if let Err(e) = tun.write(&msg.payload).await {
+                                error!("Error writing to TUN: {}", e);
+                            }
+                        }
+                        MessageType::Keepalive => {
+                            debug!("Received keepalive from client");
+                        }
+                        MessageType::Disconnect => {
+                            info!("Client requested disconnect");
+                            break;
+                        }
+                        _ => {
+                            warn!("Unexpected message type: {:?}", msg.msg_type);
+                        }
+                    },
+                    Err(e) => {
+                        error!("Failed to decode message: {}", e);
+                    }
+                }
+            }
+        });
+
+        // Wait for either task to complete
+        tokio::select! {
+            _ = quic_sender => {},
+            _ = quic_receiver => {},
+        }
+
+        // Cleanup
+        cleanup().await;
     }
-
-    // Cleanup
-    cleanup().await;
 
     Ok(())
 }

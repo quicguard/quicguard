@@ -1,14 +1,15 @@
 // QuicGuard Uses s2n-quic for HTTP/3 QUIC transport
 
+mod certs;
 mod protocol;
 mod tun_device;
-mod certs;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use clap::Parser;
 use protocol::{Message, MessageType, MAX_PACKET_SIZE};
 use s2n_quic::provider::limits::Limits;
+use s2n_quic::provider::tls::default::config;
 use s2n_quic::{client::Connect, Client};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -58,23 +59,18 @@ struct Args {
     insecure: bool,
 }
 
-
 fn main() -> Result<()> {
     let args = Args::parse();
 
     // Initialize logging
     let log_level = if args.verbose { "debug" } else { "info" };
-    tracing_subscriber::fmt()
-        .with_env_filter(log_level)
-        .init();
+    tracing_subscriber::fmt().with_env_filter(log_level).init();
 
     info!("Starting QuicGuard Client");
     info!("Connecting to server: {}", args.server);
 
     // Run the client
-    tokio_uring::start(async {
-        run_client(args).await
-    })
+    tokio_uring::start(async { run_client(args).await })
 }
 
 async fn run_client(args: Args) -> Result<()> {
@@ -83,9 +79,8 @@ async fn run_client(args: Args) -> Result<()> {
 
     // Connect to server
     info!("Establishing QUIC connection to {}", args.server);
-    let connect = Connect::new(args.server)
-        .with_server_name(args.server_name.as_str());
-    
+    let connect = Connect::new(args.server).with_server_name(args.server_name.as_str());
+
     let mut connection = client
         .connect(connect)
         .await
@@ -143,7 +138,12 @@ async fn run_client(args: Args) -> Result<()> {
     // Create and configure TUN device
     let tun = TunDevice::new(&args.tun_name).await?;
     let tun_name = tun.name().to_string();
-    TunDevice::configure(&tun_name, server_hello.assigned_ip, server_hello.subnet_mask, args.mtu)?;
+    TunDevice::configure(
+        &tun_name,
+        server_hello.assigned_ip,
+        server_hello.subnet_mask,
+        args.mtu,
+    )?;
 
     if args.default_route {
         // Add route to server first (so we don't lose connectivity)
@@ -195,8 +195,11 @@ async fn run_client(args: Args) -> Result<()> {
         while let Some(data) = tun_to_quic_rx.recv().await {
             let msg = Message::ip_packet(data);
             let encoded = msg.encode();
-            
-            if let Err(e) = send_stream.write_all(&(encoded.len() as u32).to_be_bytes()).await {
+
+            if let Err(e) = send_stream
+                .write_all(&(encoded.len() as u32).to_be_bytes())
+                .await
+            {
                 error!("Error writing length to QUIC: {}", e);
                 break;
             }
@@ -292,11 +295,18 @@ async fn build_client(args: &Args) -> Result<Client> {
     // Configure connection limits for better performance
     let limits = Limits::new()
         .with_max_idle_timeout(Duration::from_secs(30))?
-        .with_data_window(2 * 1024 * 1024)?  // 2MB receive window
-        .with_max_send_buffer_size(2 * 1024 * 1024)?;  // 2MB send buffer
+        .with_data_window(2 * 1024 * 1024)? // 2MB receive window
+        .with_max_send_buffer_size(2 * 1024 * 1024)?; // 2MB send buffer
+
+    let mut config_builder = s2n_quic::provider::tls::default::config::Builder::new();
+    config_builder
+        .trust_location(Some(args.ca_cert.as_path()), None)?
+        .set_application_protocol_preference([b"quicguard/0.1"])?;
+    let config = config_builder.build()?;
+    let tls = s2n_quic::provider::tls::default::Client::from_loader(config);
 
     let client = Client::builder()
-        .with_tls(args.ca_cert.as_path())?
+        .with_tls(tls)?
         .with_io("0.0.0.0:0")?
         .with_limits(limits)?
         .start()
@@ -310,7 +320,7 @@ mod rand {
     pub fn random<T: Default + AsMut<[u8]>>() -> T {
         let mut result = T::default();
         let bytes = result.as_mut();
-        
+
         // Use /dev/urandom for random bytes
         if let Ok(mut file) = std::fs::File::open("/dev/urandom") {
             use std::io::Read;
@@ -325,7 +335,7 @@ mod rand {
                 *byte = ((seed >> (i % 8 * 8)) & 0xFF) as u8;
             }
         }
-        
+
         result
     }
 }
