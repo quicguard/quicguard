@@ -325,8 +325,6 @@ async fn handle_connection(
     let alpn = std::str::from_utf8(&alpn_byte)?;
     info!("ALPN: {}", alpn);
     if alpn == "h3" {
-        //////////////////////////////////////////////////////////////////////////////////////////////
-
         // Wrap the raw s2n-quic connection in the h3 adapter
         let h3_conn = s2n_h3::H3Connection::new(connection);
         info!("h3_conn created");
@@ -390,8 +388,6 @@ async fn handle_connection(
                 }
             }
         }
-
-        //////////////////////////////////////////////////////////////////////////////////////////////
     } else {
         // Keep connection alive
         connection.keep_alive(true)?;
