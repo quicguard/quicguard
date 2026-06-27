@@ -1,0 +1,230 @@
+use std::collections::HashMap;
+
+use futures_util::StreamExt;
+use jsonwebtoken::Validation;
+
+pub mod config;
+pub mod policy;
+
+pub use config::*;
+pub use policy::*;
+
+#[derive(Debug)]
+pub enum ProxyError {
+    OrganizationNotFound,
+    MissingToken,
+    InvalidToken,
+    InvalidMethod,
+    AccessDenied,
+}
+
+impl std::fmt::Display for ProxyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProxyError::OrganizationNotFound => write!(f, "Organization not found"),
+            ProxyError::MissingToken => write!(f, "Missing authentication token"),
+            ProxyError::InvalidToken => write!(f, "Invalid authentication token"),
+            ProxyError::InvalidMethod => write!(f, "Invalid HTTP method"),
+            ProxyError::AccessDenied => write!(f, "Access denied"),
+        }
+    }
+}
+
+impl std::error::Error for ProxyError {}
+
+pub struct ProxyState {
+    pub config: tokio::sync::RwLock<ProxyConfig>,
+    pub org_index: tokio::sync::RwLock<HashMap<String, String>>,
+    pub redis_config: RedisConfig,
+    pub auth_config: AuthConfig,
+}
+
+impl ProxyState {
+    pub async fn from_redis(
+        redis_cfg: RedisConfig,
+        auth_cfg: AuthConfig,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let client = redis::Client::open(redis_cfg.url.as_str())?;
+        let mut conn = client.get_multiplexed_async_connection().await?;
+
+        let raw: HashMap<String, String> = redis::cmd("HGETALL")
+            .arg(&redis_cfg.org_key)
+            .query_async(&mut conn)
+            .await?;
+
+        let mut orgs = HashMap::new();
+        for (id, json) in &raw {
+            if let Ok(org) = serde_json::from_str::<Organization>(json) {
+                orgs.insert(id.clone(), org);
+            }
+        }
+
+        let org_index: HashMap<String, String> = orgs
+            .iter()
+            .flat_map(|(id, org)| org.domains.iter().map(move |d| (d.clone(), id.clone())))
+            .collect();
+
+        Ok(Self {
+            config: tokio::sync::RwLock::new(ProxyConfig {
+                organizations: orgs,
+            }),
+            org_index: tokio::sync::RwLock::new(org_index),
+            redis_config: redis_cfg,
+            auth_config: auth_cfg,
+        })
+    }
+
+    pub async fn lookup_org(&self, domain: &str) -> Option<Organization> {
+        let org_index = self.org_index.read().await;
+        let org_id = org_index.get(domain)?;
+        let config = self.config.read().await;
+        config.organizations.get(org_id).cloned()
+    }
+
+    pub async fn reload_org(&self, org_id: &str, org: Organization) {
+        let old_domains = {
+            let config = self.config.read().await;
+            config.organizations.get(org_id).map(|o| o.domains.clone())
+        };
+
+        if let Some(domains) = old_domains {
+            let mut org_index = self.org_index.write().await;
+            for domain in &domains {
+                org_index.remove(domain);
+            }
+        }
+
+        {
+            let mut org_index = self.org_index.write().await;
+            for domain in &org.domains {
+                org_index.insert(domain.clone(), org_id.to_string());
+            }
+        }
+
+        let mut config = self.config.write().await;
+        config.organizations.insert(org_id.to_string(), org);
+    }
+
+    pub async fn remove_org(&self, org_id: &str) {
+        let mut config = self.config.write().await;
+        if let Some(org) = config.organizations.remove(org_id) {
+            let mut org_index = self.org_index.write().await;
+            for domain in &org.domains {
+                org_index.remove(domain);
+            }
+        }
+    }
+}
+
+pub async fn redis_subscriber(
+    state: std::sync::Arc<ProxyState>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let client = redis::Client::open(state.redis_config.url.as_str())?;
+    let mut pubsub = client.get_async_pubsub().await?;
+
+    pubsub
+        .subscribe(&state.redis_config.pubsub_channel)
+        .await?;
+
+    let mut msg_stream = pubsub.on_message();
+
+    while let Some(msg) = msg_stream.next().await {
+        let payload: String = msg.get_payload()?;
+
+        match serde_json::from_str::<OrgUpdate>(&payload) {
+            Ok(update) => match update.action.as_str() {
+                "delete" => {
+                    state.remove_org(&update.org_id).await;
+                }
+                _ => {
+                    if let Some(org) = update.organization {
+                        state.reload_org(&update.org_id, org).await;
+                    }
+                }
+            },
+            Err(_) => {}
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct OrgUpdate {
+    pub org_id: String,
+    #[serde(default)]
+    pub action: String,
+    #[serde(default)]
+    pub organization: Option<Organization>,
+}
+
+pub fn validate_jwt(
+    token: &str,
+    auth_config: &AuthConfig,
+) -> Result<TokenClaims, ProxyError> {
+    let mut validation = Validation::new(jsonwebtoken::Algorithm::RS256);
+    validation.set_issuer(&[auth_config.jwt_issuer.as_str()]);
+    validation.set_audience(&[&auth_config.jwt_audience]);
+
+    let token_data = jsonwebtoken::decode::<TokenClaims>(
+        token,
+        &jsonwebtoken::DecodingKey::from_secret(b"secret"),
+        &validation,
+    )
+    .map_err(|_| ProxyError::InvalidToken)?;
+
+    Ok(token_data.claims)
+}
+
+pub fn evaluate_policies(
+    org: &Organization,
+    domain: &str,
+    method: &HttpMethod,
+    path: &str,
+    claims: &TokenClaims,
+) -> Result<(), ProxyError> {
+    if let Some(domain_policies) = org.domain_policies.get(domain) {
+        if !domain_policies.is_empty() {
+            let mut any_deny = false;
+            let mut any_allow = false;
+
+            for policy in domain_policies {
+                if policy.matches_request(method, path, claims) {
+                    match policy.effect {
+                        PolicyEffect::Deny => any_deny = true,
+                        PolicyEffect::Allow => any_allow = true,
+                    }
+                }
+            }
+
+            if any_deny {
+                return Err(ProxyError::AccessDenied);
+            }
+            if any_allow {
+                return Ok(());
+            }
+            return Err(ProxyError::AccessDenied);
+        }
+    }
+
+    let mut any_deny = false;
+    let mut any_allow = false;
+
+    for policy in &org.policies {
+        if policy.matches_request(method, path, claims) {
+            match policy.effect {
+                PolicyEffect::Deny => any_deny = true,
+                PolicyEffect::Allow => any_allow = true,
+            }
+        }
+    }
+
+    if any_deny {
+        return Err(ProxyError::AccessDenied);
+    }
+    if any_allow || org.policies.is_empty() {
+        Ok(())
+    } else {
+        Err(ProxyError::AccessDenied)
+    }
+}
