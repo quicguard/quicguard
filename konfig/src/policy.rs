@@ -74,6 +74,10 @@ pub struct TokenClaims {
     #[serde(default)]
     pub permissions: Vec<String>,
     #[serde(default)]
+    pub iss: Option<String>,
+    #[serde(default)]
+    pub aud: Option<String>,
+    #[serde(default)]
     pub exp: Option<u64>,
     #[serde(default)]
     pub iat: Option<u64>,

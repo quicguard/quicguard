@@ -9,6 +9,8 @@ use hyper::body::Frame;
 use hyper::Request;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::Client;
+use konfig::{HttpMethod, ProxyError, ProxyState};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 pub type HttpClient =
@@ -39,7 +41,8 @@ fn is_forbidden_request_header(name: &hyper::header::HeaderName) -> bool {
 pub async fn process_h3_request<C>(
     resolver: RequestResolver<C, Bytes>,
     client: HttpClient,
-    backend_addr: &str,
+    _backend_addr: &str,
+    proxy_state: Arc<ProxyState>,
 ) -> Result<String>
 where
     C: h3::quic::Connection<Bytes> + 'static,
@@ -60,7 +63,120 @@ where
         .unwrap_or_default();
     let req_headers = req.headers().clone();
 
-    // ── 2. Split the h3 stream so send and recv are independent ──────────────
+    tracing::debug!("h3 request: {} {} headers={:?}", method, req.uri(), req_headers);
+
+    // ── 2. Extract domain and validate via konfig ────────────────────────────
+    let domain = req_headers
+        .get("host")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("")
+        .to_string();
+
+    tracing::debug!("domain lookup: host header = {:?}, extracted domain = {:?}", req_headers.get("host"), domain);
+
+    // Look up organization by domain
+    let org = match proxy_state.lookup_org(&domain).await {
+        Some(org) => org,
+        None => {
+            let org_index = proxy_state.org_index.read().await;
+            let available_domains: Vec<&str> = org_index.keys().map(|s| s.as_str()).collect();
+            tracing::debug!("domain lookup failed for '{}', available domains: {:?}", domain, available_domains);
+            // No org found for this domain — return 404
+            let (mut send_stream, _recv_stream) = stream.split();
+            let resp = http::Response::builder()
+                .status(404)
+                .body(())
+                .unwrap();
+            send_stream.send_response(resp).await.ok();
+            send_stream.finish().await.ok();
+            return Ok(format!("rejected: no organization for domain {domain}"));
+        }
+    };
+
+    // Extract token from cookie
+    let cookie_name = &org.auth.cookie_name;
+    let token = req_headers
+        .get("cookie")
+        .and_then(|val| val.to_str().ok())
+        .and_then(|cookie_str| konfig::parse_cookie(cookie_str, cookie_name));
+
+    let token = match token {
+        Some(t) if !t.is_empty() => t,
+        _ => {
+            let (mut send_stream, _recv_stream) = stream.split();
+            let resp = http::Response::builder()
+                .status(401)
+                .body(())
+                .unwrap();
+            send_stream.send_response(resp).await.ok();
+            send_stream.finish().await.ok();
+            return Ok(format!("rejected: missing token cookie for domain {domain}"));
+        }
+    };
+
+    // Validate JWT
+    let claims = match konfig::validate_jwt(&token, &org.auth) {
+        Ok(claims) => claims,
+        Err(ProxyError::InvalidToken) | Err(ProxyError::MissingToken) => {
+            let (mut send_stream, _recv_stream) = stream.split();
+            let resp = http::Response::builder()
+                .status(401)
+                .body(())
+                .unwrap();
+            send_stream.send_response(resp).await.ok();
+            send_stream.finish().await.ok();
+            return Ok(format!("rejected: invalid token for domain {domain}"));
+        }
+        Err(_) => {
+            let (mut send_stream, _recv_stream) = stream.split();
+            let resp = http::Response::builder()
+                .status(403)
+                .body(())
+                .unwrap();
+            send_stream.send_response(resp).await.ok();
+            send_stream.finish().await.ok();
+            return Ok(format!("rejected: access denied for domain {domain}"));
+        }
+    };
+
+    // Evaluate policies
+    let konfig_method = match method.as_str() {
+        "GET" => HttpMethod::Get,
+        "POST" => HttpMethod::Post,
+        "PUT" => HttpMethod::Put,
+        "DELETE" => HttpMethod::Delete,
+        "PATCH" => HttpMethod::Patch,
+        "HEAD" => HttpMethod::Head,
+        "OPTIONS" => HttpMethod::Options,
+        _ => {
+            let (mut send_stream, _recv_stream) = stream.split();
+            let resp = http::Response::builder()
+                .status(405)
+                .body(())
+                .unwrap();
+            send_stream.send_response(resp).await.ok();
+            send_stream.finish().await.ok();
+            return Ok(format!("rejected: invalid method for domain {domain}"));
+        }
+    };
+
+    if let Err(ProxyError::AccessDenied) =
+        konfig::evaluate_policies(&org, &domain, &konfig_method, &uri_path, &claims)
+    {
+        let (mut send_stream, _recv_stream) = stream.split();
+        let resp = http::Response::builder()
+            .status(403)
+            .body(())
+            .unwrap();
+        send_stream.send_response(resp).await.ok();
+        send_stream.finish().await.ok();
+        return Ok(format!("rejected: policy denied for domain {domain}"));
+    }
+
+    // ── 3. Split the h3 stream so send and recv are independent ──────────────
     let (mut send_stream, mut recv_stream) = stream.split();
 
     // ── 3. Bridge h3 recv → mpsc channel → hyper body ────────────────────────
@@ -99,7 +215,8 @@ where
     let outbound_body = StreamBody::new(body_stream).boxed();
 
     // ── 4. Build the outbound request to the HTTP/1.1 backend ────────────────
-    let uri = format!("http://{}{}", backend_addr, uri_path);
+    let backend_base = org.upstream.base_url.trim_end_matches('/');
+    let uri = format!("{}{}", backend_base, uri_path);
     let mut backend_req = Request::builder().method(method).uri(&uri);
 
     for (name, value) in req_headers.iter() {

@@ -47,8 +47,8 @@ fn test_config_serialization_roundtrip() {
                     jwt_issuer: "https://auth.example.com".to_string(),
                     jwt_audience: "proxy".to_string(),
                     jwks_url: "https://auth.example.com/.well-known/jwks.json".to_string(),
-                    token_header: "Authorization".to_string(),
-                    token_prefix: "Bearer".to_string(),
+                    jwt_public_key: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAB8WW87geWYlziXa6h0b17GTogvEcdkCk+XWhrX/hS+Y=\n-----END PUBLIC KEY-----".to_string(),
+                    cookie_name: "session_token".to_string(),
                     redirect_url: "https://auth.example.com/login".to_string(),
                 },
             },
@@ -80,8 +80,7 @@ fn test_organization_serialization_with_defaults() {
         "auth": {
             "jwt_issuer": "https://auth.example.com",
             "jwt_audience": "proxy",
-            "jwks_url": "https://auth.example.com/.well-known/jwks.json",
-            "token_header": "Authorization",
+            "jwt_public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAB8WW87geWYlziXa6h0b17GTogvEcdkCk+XWhrX/hS+Y=\n-----END PUBLIC KEY-----",
             "redirect_url": "https://auth.example.com/login"
         }
     }"#;
@@ -91,7 +90,7 @@ fn test_organization_serialization_with_defaults() {
     assert!(org.policies.is_empty());
     assert!(org.domain_policies.is_empty());
     assert_eq!(org.upstream.max_retries, 3);
-    assert_eq!(org.auth.token_prefix, "Bearer");
+    assert_eq!(org.auth.cookie_name, "session_token");
 }
 
 #[test]
@@ -225,6 +224,8 @@ fn test_token_claims_serialization() {
         org_id: "org1".to_string(),
         roles: vec!["admin".to_string()],
         permissions: vec!["read".to_string(), "write".to_string()],
+        iss: Some("https://auth.example.com".to_string()),
+        aud: Some("proxy".to_string()),
         exp: Some(1234567890),
         iat: Some(1234567800),
     };
@@ -297,9 +298,8 @@ fn test_complex_organization_json() {
         "auth": {
             "jwt_issuer": "https://auth.acme.com",
             "jwt_audience": "acme-proxy",
-            "jwks_url": "https://auth.acme.com/.well-known/jwks.json",
-            "token_header": "X-Auth-Token",
-            "token_prefix": "Token",
+            "jwt_public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAB8WW87geWYlziXa6h0b17GTogvEcdkCk+XWhrX/hS+Y=\n-----END PUBLIC KEY-----",
+            "cookie_name": "acme_session",
             "redirect_url": "https://auth.acme.com/sso"
         }
     }"#;
@@ -311,6 +311,5 @@ fn test_complex_organization_json() {
     assert_eq!(org.policies.len(), 1);
     assert_eq!(org.domain_policies.len(), 1);
     assert_eq!(org.upstream.max_retries, 5);
-    assert_eq!(org.auth.token_header, "X-Auth-Token");
-    assert_eq!(org.auth.token_prefix, "Token");
+    assert_eq!(org.auth.cookie_name, "acme_session");
 }

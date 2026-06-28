@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "konfig"]
+
 [package]
 name = "quicguard"
 version = "0.1.0"
@@ -74,6 +77,9 @@ rustls = "0.21"
 rustls-pemfile = "1"
 rcgen = "0.12"
 time = "0.3"
+
+# Konfig - config loading from Redis and request validation
+konfig = { path = "konfig" }
 
 [dev-dependencies]
 # Benchmarking

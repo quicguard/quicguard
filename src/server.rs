@@ -9,6 +9,7 @@ mod tun_device;
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use clap::Parser;
+use konfig::{AuthConfig, ProxyState, RedisConfig};
 use protocol::{Message, MessageType, MAX_PACKET_SIZE};
 use s2n_quic::provider::limits::Limits;
 use s2n_quic::Server;
@@ -68,6 +69,42 @@ struct Args {
     /// Generate self-signed certificates if not present
     #[arg(long)]
     generate_certs: bool,
+
+    /// Redis URL for configuration
+    #[arg(long, default_value = "redis://127.0.0.1:6379")]
+    redis_url: String,
+
+    /// Redis hash key for organization configs
+    #[arg(long, default_value = "quicguard:organizations")]
+    redis_org_key: String,
+
+    /// Redis pubsub channel for live config updates
+    #[arg(long, default_value = "quicguard:updates")]
+    redis_pubsub_channel: String,
+
+    /// JWT issuer for authentication
+    #[arg(long, default_value = "")]
+    jwt_issuer: String,
+
+    /// JWT audience for authentication
+    #[arg(long, default_value = "")]
+    jwt_audience: String,
+
+    /// JWKS URL for key discovery
+    #[arg(long, default_value = "")]
+    jwks_url: String,
+
+    /// RSA public key (PEM) for JWT signature verification
+    #[arg(long)]
+    jwt_public_key: String,
+
+    /// Cookie name containing the JWT token
+    #[arg(long, default_value = "session_token")]
+    cookie_name: String,
+
+    /// Redirect URL for unauthenticated requests
+    #[arg(long, default_value = "")]
+    redirect_url: String,
 
     /// Enable verbose logging
     #[arg(short, long)]
@@ -155,6 +192,44 @@ async fn run_server(args: Args) -> Result<()> {
         std::fs::copy(&args.cert, &ca_path)?;
         info!("Copied certificate to {:?} for client use", ca_path);
     }
+
+    // Initialize konfig ProxyState from Redis
+    let redis_config = RedisConfig {
+        url: args.redis_url.clone(),
+        org_key: args.redis_org_key.clone(),
+        pubsub_channel: args.redis_pubsub_channel.clone(),
+    };
+
+    let auth_config = AuthConfig {
+        jwt_issuer: args.jwt_issuer.clone(),
+        jwt_audience: args.jwt_audience.clone(),
+        jwks_url: args.jwks_url.clone(),
+        jwt_public_key: args.jwt_public_key.clone(),
+        cookie_name: args.cookie_name.clone(),
+        redirect_url: args.redirect_url.clone(),
+    };
+
+    let proxy_state = match ProxyState::from_redis(redis_config.clone(), auth_config).await {
+        Ok(state) => {
+            info!("Loaded configuration from Redis");
+            Arc::new(state)
+        }
+        Err(e) => {
+            warn!(
+                "Failed to load config from Redis: {}. Starting with empty config.",
+                e
+            );
+            Arc::new(ProxyState::empty(redis_config))
+        }
+    };
+
+    // Start Redis subscriber for live config updates
+    let subscriber_state = Arc::clone(&proxy_state);
+    tokio::spawn(async move {
+        if let Err(e) = konfig::redis_subscriber(subscriber_state).await {
+            error!("Redis subscriber error: {}", e);
+        }
+    });
 
     // Enable IP forwarding
     if let Err(e) = enable_ip_forwarding() {
@@ -276,6 +351,7 @@ async fn run_server(args: Args) -> Result<()> {
         let ip_to_client = Arc::clone(&ip_to_client);
         let ip_pool = Arc::clone(&ip_pool);
         let tun_writer = Arc::clone(&tun_writer);
+        let proxy_state = Arc::clone(&proxy_state);
 
         tokio::spawn(async move {
             if let Err(e) = handle_connection(
@@ -286,6 +362,7 @@ async fn run_server(args: Args) -> Result<()> {
                 tun_writer,
                 server_ip,
                 subnet_mask,
+                proxy_state,
             )
             .await
             {
@@ -316,6 +393,7 @@ async fn handle_connection(
     tun_writer: Arc<Mutex<TunWriter>>,
     server_ip: Ipv4Addr,
     subnet_mask: Ipv4Addr,
+    proxy_state: Arc<ProxyState>,
 ) -> Result<()> {
     let remote_addr = connection.remote_addr()?;
     info!("New connection from {}", remote_addr);
@@ -365,7 +443,7 @@ async fn handle_connection(
                         },
                         // Right: handle the request
                         async {
-                            http3::process_h3_request(resolver, client, "127.0.0.1:1025").await
+                            http3::process_h3_request(resolver, client, "", proxy_state.clone()).await
                         }
                     );
 

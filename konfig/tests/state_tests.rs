@@ -7,8 +7,8 @@ fn default_auth() -> AuthConfig {
         jwt_issuer: "https://auth.example.com".to_string(),
         jwt_audience: "proxy".to_string(),
         jwks_url: "https://auth.example.com/.well-known/jwks.json".to_string(),
-        token_header: "Authorization".to_string(),
-        token_prefix: "Bearer".to_string(),
+        jwt_public_key: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAB8WW87geWYlziXa6h0b17GTogvEcdkCk+XWhrX/hS+Y=\n-----END PUBLIC KEY-----".to_string(),
+        cookie_name: "session_token".to_string(),
         redirect_url: "https://auth.example.com/login".to_string(),
     }
 }

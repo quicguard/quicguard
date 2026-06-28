@@ -8,6 +8,8 @@ fn test_claims(sub: &str, org_id: &str) -> TokenClaims {
         org_id: org_id.to_string(),
         roles: vec![],
         permissions: vec![],
+        iss: None,
+        aud: None,
         exp: None,
         iat: None,
     }

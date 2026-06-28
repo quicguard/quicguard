@@ -38,15 +38,16 @@ fn default_max_retries() -> u32 {
 pub struct AuthConfig {
     pub jwt_issuer: String,
     pub jwt_audience: String,
+    #[serde(default)]
     pub jwks_url: String,
-    pub token_header: String,
-    #[serde(default = "default_token_prefix")]
-    pub token_prefix: String,
+    pub jwt_public_key: String,
+    #[serde(default = "default_cookie_name")]
+    pub cookie_name: String,
     pub redirect_url: String,
 }
 
-fn default_token_prefix() -> String {
-    "Bearer".to_string()
+fn default_cookie_name() -> String {
+    "session_token".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

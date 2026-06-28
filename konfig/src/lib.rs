@@ -32,6 +32,23 @@ impl std::fmt::Display for ProxyError {
 
 impl std::error::Error for ProxyError {}
 
+/// Parse a raw `Cookie` header value and return the value for `cookie_name`.
+///
+/// Format: `"name1=value1; name2=value2"`
+pub fn parse_cookie(cookie_header: &str, cookie_name: &str) -> Option<String> {
+    cookie_header.split(';').find_map(|pair| {
+        let pair = pair.trim();
+        let mut parts = pair.splitn(2, '=');
+        let name = parts.next()?.trim();
+        let value = parts.next()?.trim();
+        if name == cookie_name {
+            Some(value.to_string())
+        } else {
+            None
+        }
+    })
+}
+
 pub struct ProxyState {
     pub config: tokio::sync::RwLock<ProxyConfig>,
     pub org_index: tokio::sync::RwLock<HashMap<String, String>>,
@@ -40,6 +57,24 @@ pub struct ProxyState {
 }
 
 impl ProxyState {
+    pub fn empty(redis_cfg: RedisConfig) -> Self {
+        Self {
+            config: tokio::sync::RwLock::new(ProxyConfig {
+                organizations: HashMap::new(),
+            }),
+            org_index: tokio::sync::RwLock::new(HashMap::new()),
+            redis_config: redis_cfg,
+            auth_config: AuthConfig {
+                jwt_issuer: String::new(),
+                jwt_audience: String::new(),
+                jwks_url: String::new(),
+                jwt_public_key: String::new(),
+                cookie_name: "session_token".to_string(),
+                redirect_url: String::new(),
+            },
+        }
+    }
+
     pub async fn from_redis(
         redis_cfg: RedisConfig,
         auth_cfg: AuthConfig,
@@ -162,16 +197,17 @@ pub fn validate_jwt(
     token: &str,
     auth_config: &AuthConfig,
 ) -> Result<TokenClaims, ProxyError> {
-    let mut validation = Validation::new(jsonwebtoken::Algorithm::RS256);
+    let key = jsonwebtoken::DecodingKey::from_ed_pem(auth_config.jwt_public_key.as_bytes())
+        .map_err(|_| ProxyError::InvalidToken)?;
+
+    let mut validation = Validation::new(jsonwebtoken::Algorithm::EdDSA);
     validation.set_issuer(&[auth_config.jwt_issuer.as_str()]);
     validation.set_audience(&[&auth_config.jwt_audience]);
+    validation.validate_exp = false;
+    validation.required_spec_claims.clear();
 
-    let token_data = jsonwebtoken::decode::<TokenClaims>(
-        token,
-        &jsonwebtoken::DecodingKey::from_secret(b"secret"),
-        &validation,
-    )
-    .map_err(|_| ProxyError::InvalidToken)?;
+    let token_data = jsonwebtoken::decode::<TokenClaims>(token, &key, &validation)
+        .map_err(|_| ProxyError::InvalidToken)?;
 
     Ok(token_data.claims)
 }
