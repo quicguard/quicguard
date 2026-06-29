@@ -66,9 +66,16 @@ where
     tracing::debug!("h3 request: {} {} headers={:?}", method, req.uri(), req_headers);
 
     // ── 2. Extract domain and validate via konfig ────────────────────────────
-    let domain = req_headers
-        .get("host")
-        .and_then(|v| v.to_str().ok())
+    // HTTP/3 uses the :authority pseudo-header which h3 maps into req.uri().
+    // Fall back to the "host" header for HTTP/1.1 compat.
+    let domain = req
+        .uri()
+        .host()
+        .or_else(|| {
+            req_headers
+                .get("host")
+                .and_then(|v| v.to_str().ok())
+        })
         .unwrap_or("")
         .split(':')
         .next()
@@ -231,10 +238,19 @@ where
     //
     // hyper drives the body stream (via the spawned task above) while
     // waiting for the backend to return response headers — fully concurrent.
-    let backend_resp = client
-        .request(backend_req)
-        .await
-        .context("Cannot forward request to backend")?;
+    let backend_resp = match client.request(backend_req).await {
+        Ok(resp) => resp,
+        Err(e) => {
+            tracing::error!("backend request failed: {e}");
+            let resp = http::Response::builder()
+                .status(504)
+                .body(())
+                .unwrap();
+            send_stream.send_response(resp).await.ok();
+            send_stream.finish().await.ok();
+            return Ok(format!("rejected: upstream unavailable for {uri_path}: {e}"));
+        }
+    };
 
     let status = backend_resp.status();
     let resp_headers = backend_resp.headers().clone();

@@ -158,17 +158,17 @@ echo "    --jwt-public-key /path/to/public.pem \\"
 echo "    --cookie-name session_token"
 echo ""
 echo "  # Then test with:"
-echo "  TOKEN=$JWT_PAYLOAD"
-echo '  curl -v --resolve "demo.localhost:4433:127.0.0.1" \'
+echo "TOKEN=$JWT_PAYLOAD"
+echo 'curl -v --http3-only -k --resolve "demo.localhost:4433:127.0.0.1" \'
 echo '    --cookie "session_token=$TOKEN" \'
 echo '    "https://demo.localhost:4433/api/users"'
 echo ""
 echo "  # Without token (expect 401):"
-echo '  curl -v --resolve "demo.localhost:4433:127.0.0.1" \'
+echo 'curl -v --http3-only -k --resolve "demo.localhost:4433:127.0.0.1" \'
 echo '    "https://demo.localhost:4433/api/users"'
 echo ""
 echo "  # DELETE on admin (expect 403):"
-echo '  curl -v --resolve "demo.localhost:4433:127.0.0.1" \'
+echo 'curl -v --http3-only -k --resolve "demo.localhost:4433:127.0.0.1" \'
 echo '    --cookie "session_token=$TOKEN" \'
 echo '    -X DELETE "https://demo.localhost:4433/api/admin/users"'
 fi

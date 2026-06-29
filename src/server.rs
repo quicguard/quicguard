@@ -301,45 +301,46 @@ async fn run_server(args: Args) -> Result<()> {
     let ip_to_client_for_tun = Arc::clone(&ip_to_client);
 
     // Task: Read from TUN and route to appropriate client
-    let tun_read_task = tokio::spawn(async move {
-        let mut buf = vec![0u8; MAX_PACKET_SIZE];
-        loop {
-            let n = {
-                let mut tun = tun_reader_handle.lock().await;
-                match tun.read(&mut buf).await {
-                    Ok(n) if n > 0 => n,
-                    Ok(_) => continue,
-                    Err(e) => {
-                        error!("Error reading from TUN: {}", e);
-                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                        continue;
-                    }
-                }
-            };
+    //temp commented
+    // let tun_read_task = tokio::spawn(async move {
+    //     let mut buf = vec![0u8; MAX_PACKET_SIZE];
+    //     loop {
+    //         let n = {
+    //             let mut tun = tun_reader_handle.lock().await;
+    //             match tun.read(&mut buf).await {
+    //                 Ok(n) if n > 0 => n,
+    //                 Ok(_) => continue,
+    //                 Err(e) => {
+    //                     error!("Error reading from TUN: {}", e);
+    //                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    //                     continue;
+    //                 }
+    //             }
+    //         };
 
-            // Extract destination IP from packet
-            if let Some(dest_ip) = protocol::extract_dest_ip(&buf[..n]) {
-                if let std::net::IpAddr::V4(dest_ipv4) = dest_ip {
-                    // Find client with this IP
-                    let client_id = {
-                        let ip_map = ip_to_client_for_tun.read().await;
-                        ip_map.get(&dest_ipv4).copied()
-                    };
+    //         // Extract destination IP from packet
+    //         if let Some(dest_ip) = protocol::extract_dest_ip(&buf[..n]) {
+    //             if let std::net::IpAddr::V4(dest_ipv4) = dest_ip {
+    //                 // Find client with this IP
+    //                 let client_id = {
+    //                     let ip_map = ip_to_client_for_tun.read().await;
+    //                     ip_map.get(&dest_ipv4).copied()
+    //                 };
 
-                    if let Some(client_id) = client_id {
-                        let clients = clients_for_tun.read().await;
-                        if let Some(session) = clients.get(&client_id) {
-                            if let Err(e) = session.tx.send(buf[..n].to_vec()).await {
-                                debug!("Failed to send to client: {}", e);
-                            }
-                        }
-                    } else {
-                        debug!("No client found for destination IP: {}", dest_ipv4);
-                    }
-                }
-            }
-        }
-    });
+    //                 if let Some(client_id) = client_id {
+    //                     let clients = clients_for_tun.read().await;
+    //                     if let Some(session) = clients.get(&client_id) {
+    //                         if let Err(e) = session.tx.send(buf[..n].to_vec()).await {
+    //                             debug!("Failed to send to client: {}", e);
+    //                         }
+    //                     }
+    //                 } else {
+    //                     debug!("No client found for destination IP: {}", dest_ipv4);
+    //                 }
+    //             }
+    //         }
+    //     }
+    // });
 
     // Accept connections
     let mut server = server;
@@ -371,7 +372,7 @@ async fn run_server(args: Args) -> Result<()> {
         });
     }
 
-    tun_read_task.abort();
+    //tun_read_task.abort();
     Ok(())
 }
 
