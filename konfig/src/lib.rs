@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures_util::StreamExt;
 use jsonwebtoken::Validation;
@@ -56,6 +57,7 @@ pub struct ProxyState {
     pub org_index: tokio::sync::RwLock<HashMap<String, String>>,
     pub redis_config: RedisConfig,
     pub auth_config: AuthConfig,
+    pub config_version: AtomicU64,
 }
 
 impl ProxyState {
@@ -75,6 +77,7 @@ impl ProxyState {
                 redirect_url: String::new(),
                 idp_url: String::new(),
             },
+            config_version: AtomicU64::new(0),
         }
     }
 
@@ -109,6 +112,7 @@ impl ProxyState {
             org_index: tokio::sync::RwLock::new(org_index),
             redis_config: redis_cfg,
             auth_config: auth_cfg,
+            config_version: AtomicU64::new(0),
         })
     }
 
@@ -141,6 +145,7 @@ impl ProxyState {
 
         let mut config = self.config.write().await;
         config.organizations.insert(org_id.to_string(), org);
+        self.config_version.fetch_add(1, Ordering::SeqCst);
     }
 
     pub async fn remove_org(&self, org_id: &str) {
@@ -151,6 +156,7 @@ impl ProxyState {
                 org_index.remove(domain);
             }
         }
+        self.config_version.fetch_add(1, Ordering::SeqCst);
     }
 }
 

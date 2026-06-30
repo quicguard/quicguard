@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::AtomicU64;
 
 use konfig::*;
 
@@ -58,6 +59,7 @@ async fn test_proxy_state_lookup_existing_org() {
         )])),
         redis_config: default_redis(),
         auth_config: default_auth(),
+        config_version: AtomicU64::new(0),
     };
 
     let org = state.lookup_org("app.example.com").await;
@@ -74,6 +76,7 @@ async fn test_proxy_state_lookup_nonexistent_domain() {
         org_index: tokio::sync::RwLock::new(HashMap::new()),
         redis_config: default_redis(),
         auth_config: default_auth(),
+        config_version: AtomicU64::new(0),
     };
 
     let org = state.lookup_org("unknown.example.com").await;
@@ -89,6 +92,7 @@ async fn test_proxy_state_reload_org() {
         org_index: tokio::sync::RwLock::new(HashMap::new()),
         redis_config: default_redis(),
         auth_config: default_auth(),
+        config_version: AtomicU64::new(0),
     };
 
     let org = test_org("org1", vec!["app.example.com"]);
@@ -114,6 +118,7 @@ async fn test_proxy_state_reload_updates_existing() {
         )])),
         redis_config: default_redis(),
         auth_config: default_auth(),
+        config_version: AtomicU64::new(0),
     };
 
     let updated_org = Organization {
@@ -147,6 +152,7 @@ async fn test_proxy_state_remove_org() {
         )])),
         redis_config: default_redis(),
         auth_config: default_auth(),
+        config_version: AtomicU64::new(0),
     };
 
     state.remove_org("org1").await;
@@ -165,6 +171,7 @@ async fn test_proxy_state_remove_nonexistent_org() {
         org_index: tokio::sync::RwLock::new(HashMap::new()),
         redis_config: default_redis(),
         auth_config: default_auth(),
+        config_version: AtomicU64::new(0),
     };
 
     state.remove_org("nonexistent").await;
@@ -188,6 +195,7 @@ async fn test_proxy_state_multiple_domains_per_org() {
         ])),
         redis_config: default_redis(),
         auth_config: default_auth(),
+        config_version: AtomicU64::new(0),
     };
 
     assert!(state.lookup_org("app1.example.com").await.is_some());

@@ -14,12 +14,125 @@ use s2n_quic::provider::limits::Limits;
 use s2n_quic::Server;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 use tun_device::{enable_ip_forwarding, setup_nat, TunDevice, TunWriter};
+
+/// Dynamic TLS certificate loader that rebuilds when ProxyState changes.
+///
+/// On each new QUIC connection, s2n-quic calls `load()` with the client's SNI.
+/// This loader reads from the shared `ProxyState` (which is kept current by the
+/// Redis pubsub subscriber) and returns a `config::Config` containing all certs.
+/// s2n-tls automatically selects the right cert based on client SNI.
+struct DomainCertLoader {
+    state: Arc<ProxyState>,
+    cached_version: AtomicU64,
+    cached_config: Mutex<Option<s2n_quic::provider::tls::s2n_tls::config::Config>>,
+}
+
+impl DomainCertLoader {
+    fn new(state: Arc<ProxyState>) -> Self {
+        Self {
+            state,
+            cached_version: AtomicU64::new(0),
+            cached_config: Mutex::new(None),
+        }
+    }
+
+    async fn build_config(state: &ProxyState) -> Result<s2n_quic::provider::tls::s2n_tls::config::Config> {
+        use s2n_quic::provider::tls::s2n_tls::security::DEFAULT_TLS13;
+
+        let mut builder = s2n_quic::provider::tls::s2n_tls::config::Builder::new();
+        builder
+            .set_security_policy(&DEFAULT_TLS13)
+            .context("Failed to set TLS security policy")?;
+        builder
+            .enable_quic()
+            .context("Failed to enable QUIC in TLS config")?;
+        builder
+            .set_application_protocol_preference([b"h3".as_slice(), b"quicguard/0.1".as_slice()])
+            .context("Failed to set ALPN")?;
+
+        let mut loaded = false;
+        let orgs = state.config.read().await;
+        for org in orgs.organizations.values() {
+            for (domain, tls_cfg) in &org.tls {
+                if tls_cfg.cert_pem.is_empty() || tls_cfg.key_pem.is_empty() {
+                    continue;
+                }
+                builder
+                    .load_pem(tls_cfg.cert_pem.as_bytes(), tls_cfg.key_pem.as_bytes())
+                    .with_context(|| {
+                        format!(
+                            "Failed to load TLS cert for domain '{domain}' (org: {})",
+                            org.id
+                        )
+                    })?;
+                info!("Loaded TLS cert for domain: {domain}");
+                loaded = true;
+            }
+        }
+
+        if !loaded {
+            anyhow::bail!(
+                "No TLS certificate found in Redis org config. \
+                 Seed your org with a 'tls' field containing cert_pem and key_pem."
+            );
+        }
+
+        builder.build().context("Failed to build TLS config")
+    }
+}
+
+impl s2n_quic::provider::tls::s2n_tls::ConfigLoader for DomainCertLoader {
+    fn load(
+        &mut self,
+        _cx: s2n_quic::provider::tls::s2n_tls::ConnectionContext,
+    ) -> s2n_quic::provider::tls::s2n_tls::config::Config {
+        let current_version = self.state.config_version.load(Ordering::SeqCst);
+        let cached_version = self.cached_version.load(Ordering::SeqCst);
+
+        if current_version != cached_version {
+            // Config changed — rebuild from ProxyState (which the pubsub subscriber
+            // keeps up to date). This runs on the QUIC accept thread, so we use
+            // blocking_read which is fine for the brief lock hold.
+            match tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(Self::build_config(&self.state))
+            }) {
+                Ok(config) => {
+                    *self.cached_config.blocking_lock() = Some(config.clone());
+                    self.cached_version.store(current_version, Ordering::SeqCst);
+                    info!("Rebuilt TLS config (version {current_version})");
+                    config
+                }
+                Err(e) => {
+                    error!("Failed to rebuild TLS config: {e}");
+                    // Fall back to cached config if available
+                    self.cached_config
+                        .blocking_lock()
+                        .clone()
+                        .expect("no cached TLS config and rebuild failed")
+                }
+            }
+        } else {
+            self.cached_config
+                .blocking_lock()
+                .clone()
+                .expect("TLS config not initialized")
+        }
+    }
+}
+
+fn build_tls_server(
+    proxy_state: Arc<ProxyState>,
+) -> Result<s2n_quic::provider::tls::s2n_tls::Server<DomainCertLoader>> {
+    let loader = DomainCertLoader::new(proxy_state);
+    Ok(s2n_quic::provider::tls::s2n_tls::Server::from_loader(loader))
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "QuicGuard")]
@@ -220,48 +333,7 @@ async fn run_server(args: Args) -> Result<()> {
         .with_data_window(2 * 1024 * 1024)? // 2MB receive window
         .with_max_send_buffer_size(2 * 1024 * 1024)?; // 2MB send buffer
 
-    let mut tls = s2n_quic::provider::tls::default::Server::builder();
-    tls.config_mut()
-        .set_application_protocol_preference(["quicguard/0.1", "h3"])?;
-
-    // Load TLS certificate from Redis org config
-    let (cert_path, key_path) = {
-        let config = proxy_state.config.read().await;
-        config
-            .organizations
-            .values()
-            .find(|org| {
-                org.tls.values().any(|t| !t.cert_pem.is_empty() && !t.key_pem.is_empty())
-            })
-            .and_then(|org| {
-                org.tls
-                    .values()
-                    .find(|t| !t.cert_pem.is_empty() && !t.key_pem.is_empty())
-            })
-            .map(|tls_cfg| {
-                let cert_dir = std::env::temp_dir().join("quicguard-certs");
-                std::fs::create_dir_all(&cert_dir)
-                    .context("Failed to create cert temp dir")?;
-                let cert_file = cert_dir.join("server.pem");
-                let key_file = cert_dir.join("server.key");
-                std::fs::write(&cert_file, &tls_cfg.cert_pem)
-                    .context("Failed to write TLS cert from Redis")?;
-                std::fs::write(&key_file, &tls_cfg.key_pem)
-                    .context("Failed to write TLS key from Redis")?;
-                info!("Loaded TLS certificate from Redis org config");
-                Ok((cert_file, key_file))
-            })
-            .unwrap_or_else(|| {
-                Err(anyhow::anyhow!(
-                    "No TLS certificate found in Redis org config. \
-                     Seed your org with a 'tls' field containing cert_pem and key_pem."
-                ))
-            })?
-    };
-
-    let tls = tls
-        .with_certificate(cert_path.as_path(), key_path.as_path())?
-        .build()?;
+    let tls = build_tls_server(Arc::clone(&proxy_state))?;
 
     // Build QUIC server with tuned limits
     let server = Server::builder()
