@@ -103,8 +103,39 @@ where
         }
     };
 
-    // Extract token from cookie
     let cookie_name = &org.auth.cookie_name;
+
+    // If the request contains a `token` query parameter (IDP callback),
+    // set it as a cookie and redirect to the same path without the token.
+    if let Some(query) = req.uri().query() {
+        for pair in query.split('&') {
+            let mut kv = pair.splitn(2, '=');
+            if let (Some(key), Some(val)) = (kv.next(), kv.next()) {
+                if key == "token" && !val.is_empty() {
+                    let (mut send_stream, _recv_stream) = stream.split();
+                    let clean_path = req
+                        .uri()
+                        .path()
+                        .to_string();
+                    let redirect_uri = format!("https://{domain}{clean_path}");
+                    let cookie_value = format!(
+                        "{cookie_name}={val}; Path=/; HttpOnly; Secure; SameSite=Lax"
+                    );
+                    let resp = http::Response::builder()
+                        .status(302)
+                        .header("location", &redirect_uri)
+                        .header("set-cookie", &cookie_value)
+                        .body(())
+                        .unwrap();
+                    send_stream.send_response(resp).await.ok();
+                    send_stream.finish().await.ok();
+                    return Ok(format!("set token cookie and redirected for domain {domain}"));
+                }
+            }
+        }
+    }
+
+    // Extract token from cookie
     let token = req_headers
         .get("cookie")
         .and_then(|val| val.to_str().ok())
@@ -114,28 +145,62 @@ where
         Some(t) if !t.is_empty() => t,
         _ => {
             let (mut send_stream, _recv_stream) = stream.split();
+            let idp_url = if org.auth.idp_url.is_empty() {
+                &org.auth.redirect_url
+            } else {
+                &org.auth.idp_url
+            };
+            if idp_url.is_empty() {
+                let resp = http::Response::builder()
+                    .status(401)
+                    .body(())
+                    .unwrap();
+                send_stream.send_response(resp).await.ok();
+                send_stream.finish().await.ok();
+                return Ok(format!("rejected: missing token cookie for domain {domain}"));
+            }
+            let original_url = format!("https://{domain}{uri_path}");
+            let callback_url = format!("{idp_url}?redirect_uri={}", urlencoding::encode(&original_url));
             let resp = http::Response::builder()
-                .status(401)
+                .status(302)
+                .header("location", callback_url)
                 .body(())
                 .unwrap();
             send_stream.send_response(resp).await.ok();
             send_stream.finish().await.ok();
-            return Ok(format!("rejected: missing token cookie for domain {domain}"));
+            return Ok(format!("redirected to IDP for domain {domain}"));
         }
     };
 
     // Validate JWT
     let claims = match konfig::validate_jwt(&token, &org.auth) {
         Ok(claims) => claims,
-        Err(ProxyError::InvalidToken) | Err(ProxyError::MissingToken) => {
+        Err(ProxyError::InvalidToken) | Err(ProxyError::ExpiredToken) | Err(ProxyError::MissingToken) => {
             let (mut send_stream, _recv_stream) = stream.split();
+            let idp_url = if org.auth.idp_url.is_empty() {
+                &org.auth.redirect_url
+            } else {
+                &org.auth.idp_url
+            };
+            if idp_url.is_empty() {
+                let resp = http::Response::builder()
+                    .status(401)
+                    .body(())
+                    .unwrap();
+                send_stream.send_response(resp).await.ok();
+                send_stream.finish().await.ok();
+                return Ok(format!("rejected: invalid token for domain {domain}"));
+            }
+            let original_url = format!("https://{domain}{uri_path}");
+            let callback_url = format!("{idp_url}?redirect_uri={}", urlencoding::encode(&original_url));
             let resp = http::Response::builder()
-                .status(401)
+                .status(302)
+                .header("location", callback_url)
                 .body(())
                 .unwrap();
             send_stream.send_response(resp).await.ok();
             send_stream.finish().await.ok();
-            return Ok(format!("rejected: invalid token for domain {domain}"));
+            return Ok(format!("redirected to IDP for domain {domain}"));
         }
         Err(_) => {
             let (mut send_stream, _recv_stream) = stream.split();

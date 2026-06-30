@@ -108,7 +108,8 @@ ORG_JSON=$(cat <<EOF
         "jwt_audience": "quicguard-proxy",
         "jwt_public_key": "$(echo "$JWT_PUBLIC_KEY" | sed ':a;N;$!ba;s/\n/\\n/g')",
         "cookie_name": "session_token",
-        "redirect_url": "https://auth.quicguard.dev/login"
+        "redirect_url": "https://auth.quicguard.dev/login",
+        "idp_url": "https://auth.quicguard.dev/idp"
     }
 }
 EOF
@@ -137,6 +138,7 @@ echo "  JWT algo:   EdDSA (Ed25519, asymmetric)"
 echo "  JWT issuer: https://auth.quicguard.dev"
 echo "  JWT aud:    quicguard-proxy"
 echo "  Cookie:     session_token"
+echo "  IDP URL:    https://auth.quicguard.dev/idp"
 echo ""
 echo "  Policies:"
 echo "    GET/HEAD  /api/*              -> ALLOW"
@@ -155,7 +157,8 @@ echo "    --redis-url $REDIS_URL \\"
 echo "    --jwt-issuer https://auth.quicguard.dev \\"
 echo "    --jwt-audience quicguard-proxy \\"
 echo "    --jwt-public-key /path/to/public.pem \\"
-echo "    --cookie-name session_token"
+echo "    --cookie-name session_token \\"
+echo "    --idp-url https://auth.quicguard.dev/idp"
 echo ""
 echo "  # Then test with:"
 echo "TOKEN=$JWT_PAYLOAD"
@@ -163,7 +166,7 @@ echo 'curl -v --http3-only -k --resolve "demo.localhost:4433:127.0.0.1" \'
 echo '    --cookie "session_token=$TOKEN" \'
 echo '    "https://demo.localhost:4433/api/users"'
 echo ""
-echo "  # Without token (expect 401):"
+echo "  # Without token (expect 302 redirect to IDP):"
 echo 'curl -v --http3-only -k --resolve "demo.localhost:4433:127.0.0.1" \'
 echo '    "https://demo.localhost:4433/api/users"'
 echo ""

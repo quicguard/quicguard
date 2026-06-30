@@ -10,6 +10,7 @@ fn default_auth() -> AuthConfig {
         jwt_public_key: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAB8WW87geWYlziXa6h0b17GTogvEcdkCk+XWhrX/hS+Y=\n-----END PUBLIC KEY-----".to_string(),
         cookie_name: "session_token".to_string(),
         redirect_url: "https://auth.example.com/login".to_string(),
+        idp_url: String::new(),
     }
 }
 

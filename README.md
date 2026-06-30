@@ -269,6 +269,38 @@ Options:
       --generate-certs
           Generate self-signed certificates if not present
 
+      --redis-url <REDIS_URL>
+          Redis URL for configuration
+          [default: redis://127.0.0.1:6379]
+
+      --redis-org-key <REDIS_ORG_KEY>
+          Redis hash key for organization configs
+          [default: quicguard:organizations]
+
+      --redis-pubsub-channel <REDIS_PUBSUB_CHANNEL>
+          Redis pubsub channel for live config updates
+          [default: quicguard:updates]
+
+      --jwt-issuer <JWT_ISSUER>
+          Expected JWT issuer claim
+
+      --jwt-audience <JWT_AUDIENCE>
+          Expected JWT audience claim
+
+      --jwt-public-key <JWT_PUBLIC_KEY>
+          Ed25519 public key (PEM) for JWT signature verification
+
+      --cookie-name <COOKIE_NAME>
+          Cookie name containing the JWT token
+          [default: session_token]
+
+      --redirect-url <REDIRECT_URL>
+          Redirect URL for unauthenticated requests
+
+      --idp-url <IDP_URL>
+          Identity Provider URL. Users are redirected here when
+          no token, or token is invalid/expired (per-customer).
+
   -v, --verbose
           Enable verbose logging
 ```
@@ -313,3 +345,52 @@ Options:
       --insecure
           Skip TLS certificate verification (testing only)
 ```
+
+## IDP Integration
+
+QuicGuard supports Identity Provider (IDP) integration for the HTTP/3 proxy mode. Each customer can configure their own IDP URL.
+
+### How It Works
+
+```
+1. User visits proxy → no token cookie
+2. Proxy returns 302 → {idp_url}?redirect_uri={original_url}
+3. User authenticates at IDP
+4. IDP redirects back → {original_url}?token={jwt}
+5. Proxy sees ?token= → sets Set-Cookie header → 302 to clean URL
+6. Subsequent requests use the cookie
+```
+
+### Configuration
+
+Set the `idp_url` per organization in Redis:
+
+```json
+{
+    "auth": {
+        "jwt_issuer": "https://auth.example.com",
+        "jwt_audience": "quicguard-proxy",
+        "jwt_public_key": "...",
+        "cookie_name": "session_token",
+        "redirect_url": "https://auth.example.com/login",
+        "idp_url": "https://auth.example.com/idp"
+    }
+}
+```
+
+Or via the server CLI:
+
+```bash
+cargo run --bin server -- \
+    --idp-url https://auth.example.com/idp \
+    --jwt-issuer https://auth.example.com \
+    --jwt-public-key /path/to/public.pem
+```
+
+### Behavior
+
+- **Missing token**: 302 redirect to `{idp_url}?redirect_uri={encoded_url}`
+- **Invalid/expired token**: Same 302 redirect to IDP
+- **Token in query param** (`?token=jwt`): Sets `Set-Cookie` with `HttpOnly; Secure; SameSite=Lax`, then 302 redirects to clean URL
+- **Valid token in cookie**: Normal proxy flow
+- If `idp_url` is empty, falls back to `redirect_url`. If both are empty, returns 401.

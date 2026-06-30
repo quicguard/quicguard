@@ -44,6 +44,8 @@ pub struct AuthConfig {
     #[serde(default = "default_cookie_name")]
     pub cookie_name: String,
     pub redirect_url: String,
+    #[serde(default)]
+    pub idp_url: String,
 }
 
 fn default_cookie_name() -> String {

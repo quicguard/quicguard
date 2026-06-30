@@ -17,6 +17,7 @@ fn make_auth_config(cookie_name: &str) -> AuthConfig {
         jwt_public_key: JWT_PUBLIC_KEY.to_string(),
         cookie_name: cookie_name.to_string(),
         redirect_url: "https://auth.quicguard.dev/login".to_string(),
+        idp_url: "https://auth.quicguard.dev/idp".to_string(),
     }
 }
 
@@ -458,7 +459,8 @@ fn test_config_from_json_roundtrip() {
             "jwt_audience": "quicguard-proxy",
             "jwt_public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAB8WW87geWYlziXa6h0b17GTogvEcdkCk+XWhrX/hS+Y=\n-----END PUBLIC KEY-----",
             "cookie_name": "session_token",
-            "redirect_url": "https://auth.quicguard.dev/login"
+            "redirect_url": "https://auth.quicguard.dev/login",
+            "idp_url": "https://auth.quicguard.dev/idp"
         }
     }"#;
 

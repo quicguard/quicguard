@@ -14,6 +14,7 @@ pub enum ProxyError {
     OrganizationNotFound,
     MissingToken,
     InvalidToken,
+    ExpiredToken,
     InvalidMethod,
     AccessDenied,
 }
@@ -24,6 +25,7 @@ impl std::fmt::Display for ProxyError {
             ProxyError::OrganizationNotFound => write!(f, "Organization not found"),
             ProxyError::MissingToken => write!(f, "Missing authentication token"),
             ProxyError::InvalidToken => write!(f, "Invalid authentication token"),
+            ProxyError::ExpiredToken => write!(f, "Authentication token has expired"),
             ProxyError::InvalidMethod => write!(f, "Invalid HTTP method"),
             ProxyError::AccessDenied => write!(f, "Access denied"),
         }
@@ -71,6 +73,7 @@ impl ProxyState {
                 jwt_public_key: String::new(),
                 cookie_name: "session_token".to_string(),
                 redirect_url: String::new(),
+                idp_url: String::new(),
             },
         }
     }
@@ -203,11 +206,15 @@ pub fn validate_jwt(
     let mut validation = Validation::new(jsonwebtoken::Algorithm::EdDSA);
     validation.set_issuer(&[auth_config.jwt_issuer.as_str()]);
     validation.set_audience(&[&auth_config.jwt_audience]);
-    validation.validate_exp = false;
+    validation.validate_exp = true;
     validation.required_spec_claims.clear();
 
-    let token_data = jsonwebtoken::decode::<TokenClaims>(token, &key, &validation)
-        .map_err(|_| ProxyError::InvalidToken)?;
+    let token_data = jsonwebtoken::decode::<TokenClaims>(token, &key, &validation).map_err(
+        |e| match e.kind() {
+            jsonwebtoken::errors::ErrorKind::ExpiredSignature => ProxyError::ExpiredToken,
+            _ => ProxyError::InvalidToken,
+        },
+    )?;
 
     Ok(token_data.claims)
 }

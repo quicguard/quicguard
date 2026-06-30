@@ -106,6 +106,10 @@ struct Args {
     #[arg(long, default_value = "")]
     redirect_url: String,
 
+    /// IDP (Identity Provider) URL for authentication redirects
+    #[arg(long, default_value = "")]
+    idp_url: String,
+
     /// Enable verbose logging
     #[arg(short, long)]
     verbose: bool,
@@ -207,6 +211,7 @@ async fn run_server(args: Args) -> Result<()> {
         jwt_public_key: args.jwt_public_key.clone(),
         cookie_name: args.cookie_name.clone(),
         redirect_url: args.redirect_url.clone(),
+        idp_url: args.idp_url.clone(),
     };
 
     let proxy_state = match ProxyState::from_redis(redis_config.clone(), auth_config).await {
