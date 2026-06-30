@@ -39,6 +39,7 @@ fn test_org(id: &str, domains: Vec<&str>) -> Organization {
         domain_policies: HashMap::new(),
         upstream: default_upstream(),
         auth: default_auth(),
+        tls: HashMap::new(),
     }
 }
 
@@ -123,6 +124,7 @@ async fn test_proxy_state_reload_updates_existing() {
         domain_policies: HashMap::new(),
         upstream: default_upstream(),
         auth: default_auth(),
+        tls: HashMap::new(),
     };
     state.reload_org("org1", updated_org).await;
 

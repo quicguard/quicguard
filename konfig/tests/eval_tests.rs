@@ -36,6 +36,7 @@ fn test_org() -> Organization {
             redirect_url: "https://auth.example.com/login".to_string(),
             idp_url: String::new(),
         },
+        tls: HashMap::new(),
     }
 }
 

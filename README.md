@@ -84,19 +84,14 @@ sudo cp target/release/server /opt/quicguard/
 sudo chmod 755 /opt/quicguard/server
 ```
 
-#### 2. Generate Certificates
+#### 2. Seed Redis with Configuration
+
+TLS certificates are loaded from Redis per-organization, not from disk files.
+Run the seed script to populate Redis with a sample org including TLS certs:
 
 ```bash
-# Generate self-signed certificates
-cd /opt/quicguard
-sudo ./server --generate-certs
-
-# Or use your own certificates
-sudo cp /path/to/your/server.pem certs/
-sudo cp /path/to/your/server.key certs/
-
-# For clients, copy the CA certificate
-sudo cp certs/server.pem certs/ca.pem
+cd konfig
+./scripts/seed-redis.sh
 ```
 
 #### 3. Configure Firewall
@@ -132,8 +127,6 @@ After=network.target
 Type=simple
 ExecStart=/opt/quicguard/server \
     --listen 0.0.0.0:4433 \
-    --cert /opt/quicguard/certs/server.pem \
-    --key /opt/quicguard/certs/server.key \
     --server-ip 10.0.0.1 \
     --enable-nat \
     --external-interface eth0
@@ -191,9 +184,11 @@ chmod +x ~/quicguard/connect.sh
 #### Terminal 1 - Server (requires root)
 
 ```bash
-# Generate certificates and start server
+# Seed Redis first (includes TLS certs)
+cd konfig && ./scripts/seed-redis.sh
+
+# Start server
 sudo ./target/release/server \
-    --generate-certs \
     --enable-nat \
     --external-interface eth0 \
     --verbose
@@ -231,14 +226,6 @@ Options:
           Listen address (IP:port)
           [default: 0.0.0.0:4433]
 
-      --cert <CERT>
-          Path to server certificate
-          [default: certs/server.pem]
-
-      --key <KEY>
-          Path to server private key
-          [default: certs/server.key]
-
   -t, --tun-name <TUN_NAME>
           TUN device name
           [default: masque0]
@@ -266,9 +253,6 @@ Options:
           MTU for the tunnel
           [default: 1400]
 
-      --generate-certs
-          Generate self-signed certificates if not present
-
       --redis-url <REDIS_URL>
           Redis URL for configuration
           [default: redis://127.0.0.1:6379]
@@ -281,19 +265,6 @@ Options:
           Redis pubsub channel for live config updates
           [default: quicguard:updates]
 
-      --jwt-issuer <JWT_ISSUER>
-          Expected JWT issuer claim
-
-      --jwt-audience <JWT_AUDIENCE>
-          Expected JWT audience claim
-
-      --jwt-public-key <JWT_PUBLIC_KEY>
-          Ed25519 public key (PEM) for JWT signature verification
-
-      --cookie-name <COOKIE_NAME>
-          Cookie name containing the JWT token
-          [default: session_token]
-
       --redirect-url <REDIRECT_URL>
           Redirect URL for unauthenticated requests
 
@@ -304,6 +275,10 @@ Options:
   -v, --verbose
           Enable verbose logging
 ```
+
+> **Note:** JWT auth settings (`jwt_issuer`, `jwt_audience`, `jwt_public_key`, `cookie_name`)
+> and per-domain TLS certificates are configured per-organization in Redis, not via CLI arguments.
+> See [konfig/README.md](konfig/README.md) for the full configuration schema.
 
 ### Client Options
 
@@ -363,7 +338,7 @@ QuicGuard supports Identity Provider (IDP) integration for the HTTP/3 proxy mode
 
 ### Configuration
 
-Set the `idp_url` per organization in Redis:
+Set the `auth` and `tls` fields per organization in Redis:
 
 ```json
 {
@@ -374,17 +349,14 @@ Set the `idp_url` per organization in Redis:
         "cookie_name": "session_token",
         "redirect_url": "https://auth.example.com/login",
         "idp_url": "https://auth.example.com/idp"
+    },
+    "tls": {
+        "app.example.com": {
+            "cert_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+            "key_pem": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+        }
     }
 }
-```
-
-Or via the server CLI:
-
-```bash
-cargo run --bin server -- \
-    --idp-url https://auth.example.com/idp \
-    --jwt-issuer https://auth.example.com \
-    --jwt-public-key /path/to/public.pem
 ```
 
 ### Behavior

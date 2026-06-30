@@ -51,6 +51,16 @@ openssl pkey -in "$JWT_KEY_DIR/private.pem" -pubout -out "$JWT_KEY_DIR/public.pe
 JWT_PRIVATE_KEY=$(cat "$JWT_KEY_DIR/private.pem")
 JWT_PUBLIC_KEY=$(cat "$JWT_KEY_DIR/public.pem")
 
+# Generate self-signed TLS certificate for QUIC
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+    -keyout "$JWT_KEY_DIR/tls.key" -out "$JWT_KEY_DIR/tls.crt" \
+    -days 365 -nodes \
+    -subj "/CN=demo.localhost" \
+    -addext "subjectAltName=DNS:demo.localhost,DNS:app.demo.localhost,IP:127.0.0.1" \
+    2>/dev/null
+TLS_CERT=$(cat "$JWT_KEY_DIR/tls.crt")
+TLS_KEY=$(cat "$JWT_KEY_DIR/tls.key")
+
 ORG_JSON=$(cat <<EOF
 {
     "id": "org-demo",
@@ -110,6 +120,12 @@ ORG_JSON=$(cat <<EOF
         "cookie_name": "session_token",
         "redirect_url": "https://auth.quicguard.dev/login",
         "idp_url": "https://auth.quicguard.dev/idp"
+    },
+    "tls": {
+        "demo.localhost": {
+            "cert_pem": "$(echo "$TLS_CERT" | sed ':a;N;$!ba;s/\n/\\n/g')",
+            "key_pem": "$(echo "$TLS_KEY" | sed ':a;N;$!ba;s/\n/\\n/g')"
+        }
     }
 }
 EOF
@@ -134,6 +150,7 @@ echo -e "  ${GREEN}Redis seeded successfully${NC}"
 echo ""
 echo "  Domain:     demo.localhost"
 echo "  Upstream:   http://127.0.0.1:1025"
+echo "  TLS:        self-signed (EC P-256) for demo.localhost"
 echo "  JWT algo:   EdDSA (Ed25519, asymmetric)"
 echo "  JWT issuer: https://auth.quicguard.dev"
 echo "  JWT aud:    quicguard-proxy"
@@ -154,11 +171,7 @@ echo "  # Start a backend on 127.0.0.1:1025 (e.g. python3 -m http.server 1025)"
 echo "  # Start quicguard server:"
 echo "  cargo run --bin server -- \\"
 echo "    --redis-url $REDIS_URL \\"
-echo "    --jwt-issuer https://auth.quicguard.dev \\"
-echo "    --jwt-audience quicguard-proxy \\"
-echo "    --jwt-public-key /path/to/public.pem \\"
-echo "    --cookie-name session_token \\"
-echo "    --idp-url https://auth.quicguard.dev/idp"
+echo "    --listen 0.0.0.0:4433"
 echo ""
 echo "  # Then test with:"
 echo "TOKEN=$JWT_PAYLOAD"

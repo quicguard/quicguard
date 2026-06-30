@@ -55,6 +55,7 @@ fn make_sample_org(org_id: &str, domain: &str, cookie_name: &str) -> Organizatio
             max_retries: 3,
         },
         auth: make_auth_config(cookie_name),
+        tls: HashMap::new(),
     }
 }
 

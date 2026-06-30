@@ -52,6 +52,7 @@ fn test_config_serialization_roundtrip() {
                     redirect_url: "https://auth.example.com/login".to_string(),
                     idp_url: String::new(),
                 },
+                tls: HashMap::new(),
             },
         )]),
     };

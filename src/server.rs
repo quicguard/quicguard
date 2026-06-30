@@ -1,6 +1,5 @@
 // QuicGuard Uses s2n-quic for HTTP/3 QUIC transport
 
-mod certs;
 mod http3;
 mod protocol;
 mod s2n_h3;
@@ -15,7 +14,6 @@ use s2n_quic::provider::limits::Limits;
 use s2n_quic::Server;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -29,14 +27,6 @@ struct Args {
     /// Listen address (IP:port)
     #[arg(short, long, default_value = "0.0.0.0:4433")]
     listen: SocketAddr,
-
-    /// Path to server certificate
-    #[arg(long, default_value = "certs/server.pem")]
-    cert: PathBuf,
-
-    /// Path to server private key
-    #[arg(long, default_value = "certs/server.key")]
-    key: PathBuf,
 
     /// TUN device name
     #[arg(short, long, default_value = "quicguard0")]
@@ -66,10 +56,6 @@ struct Args {
     #[arg(long, default_value = "1400")]
     mtu: u16,
 
-    /// Generate self-signed certificates if not present
-    #[arg(long)]
-    generate_certs: bool,
-
     /// Redis URL for configuration
     #[arg(long, default_value = "redis://127.0.0.1:6379")]
     redis_url: String,
@@ -81,26 +67,6 @@ struct Args {
     /// Redis pubsub channel for live config updates
     #[arg(long, default_value = "quicguard:updates")]
     redis_pubsub_channel: String,
-
-    /// JWT issuer for authentication
-    #[arg(long, default_value = "")]
-    jwt_issuer: String,
-
-    /// JWT audience for authentication
-    #[arg(long, default_value = "")]
-    jwt_audience: String,
-
-    /// JWKS URL for key discovery
-    #[arg(long, default_value = "")]
-    jwks_url: String,
-
-    /// RSA public key (PEM) for JWT signature verification
-    #[arg(long)]
-    jwt_public_key: String,
-
-    /// Cookie name containing the JWT token
-    #[arg(long, default_value = "session_token")]
-    cookie_name: String,
 
     /// Redirect URL for unauthenticated requests
     #[arg(long, default_value = "")]
@@ -183,20 +149,6 @@ fn main() -> Result<()> {
 }
 
 async fn run_server(args: Args) -> Result<()> {
-    // Generate certificates if requested and not present
-    if args.generate_certs {
-        certs::generate_certificates(&args.cert, &args.key, "localhost")?;
-
-        // Also generate CA cert for client
-        let ca_path = args
-            .cert
-            .parent()
-            .unwrap_or(std::path::Path::new("."))
-            .join("ca.pem");
-        std::fs::copy(&args.cert, &ca_path)?;
-        info!("Copied certificate to {:?} for client use", ca_path);
-    }
-
     // Initialize konfig ProxyState from Redis
     let redis_config = RedisConfig {
         url: args.redis_url.clone(),
@@ -205,11 +157,11 @@ async fn run_server(args: Args) -> Result<()> {
     };
 
     let auth_config = AuthConfig {
-        jwt_issuer: args.jwt_issuer.clone(),
-        jwt_audience: args.jwt_audience.clone(),
-        jwks_url: args.jwks_url.clone(),
-        jwt_public_key: args.jwt_public_key.clone(),
-        cookie_name: args.cookie_name.clone(),
+        jwt_issuer: String::new(),
+        jwt_audience: String::new(),
+        jwks_url: String::new(),
+        jwt_public_key: String::new(),
+        cookie_name: "session_token".to_string(),
         redirect_url: args.redirect_url.clone(),
         idp_url: args.idp_url.clone(),
     };
@@ -271,10 +223,44 @@ async fn run_server(args: Args) -> Result<()> {
     let mut tls = s2n_quic::provider::tls::default::Server::builder();
     tls.config_mut()
         .set_application_protocol_preference(["quicguard/0.1", "h3"])?;
-    // confirmed signature: set_application_protocol_preference<P, I>(&mut self, protocols: P)
-    //   where P: IntoIterator<Item = I>, I: AsRef<[u8]>
+
+    // Load TLS certificate from Redis org config
+    let (cert_path, key_path) = {
+        let config = proxy_state.config.read().await;
+        config
+            .organizations
+            .values()
+            .find(|org| {
+                org.tls.values().any(|t| !t.cert_pem.is_empty() && !t.key_pem.is_empty())
+            })
+            .and_then(|org| {
+                org.tls
+                    .values()
+                    .find(|t| !t.cert_pem.is_empty() && !t.key_pem.is_empty())
+            })
+            .map(|tls_cfg| {
+                let cert_dir = std::env::temp_dir().join("quicguard-certs");
+                std::fs::create_dir_all(&cert_dir)
+                    .context("Failed to create cert temp dir")?;
+                let cert_file = cert_dir.join("server.pem");
+                let key_file = cert_dir.join("server.key");
+                std::fs::write(&cert_file, &tls_cfg.cert_pem)
+                    .context("Failed to write TLS cert from Redis")?;
+                std::fs::write(&key_file, &tls_cfg.key_pem)
+                    .context("Failed to write TLS key from Redis")?;
+                info!("Loaded TLS certificate from Redis org config");
+                Ok((cert_file, key_file))
+            })
+            .unwrap_or_else(|| {
+                Err(anyhow::anyhow!(
+                    "No TLS certificate found in Redis org config. \
+                     Seed your org with a 'tls' field containing cert_pem and key_pem."
+                ))
+            })?
+    };
+
     let tls = tls
-        .with_certificate(args.cert.as_path(), args.key.as_path())?
+        .with_certificate(cert_path.as_path(), key_path.as_path())?
         .build()?;
 
     // Build QUIC server with tuned limits

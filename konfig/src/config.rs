@@ -10,6 +10,14 @@ pub struct ProxyConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TlsConfig {
+    #[serde(default)]
+    pub cert_pem: String,
+    #[serde(default)]
+    pub key_pem: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Organization {
     pub id: String,
     pub name: String,
@@ -20,6 +28,8 @@ pub struct Organization {
     pub domain_policies: HashMap<String, Vec<Policy>>,
     pub upstream: UpstreamConfig,
     pub auth: AuthConfig,
+    #[serde(default)]
+    pub tls: HashMap<String, TlsConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

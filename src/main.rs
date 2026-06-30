@@ -1,7 +1,6 @@
 // QuicGuard using HTTP/3 QUIC
 // This file provides a unified entry point for both client and server modes
 
-mod certs;
 mod protocol;
 mod tun_device;
 
@@ -23,14 +22,6 @@ enum Commands {
         /// Listen address (IP:port)
         #[arg(short, long, default_value = "0.0.0.0:4433")]
         listen: SocketAddr,
-
-        /// Path to server certificate
-        #[arg(long, default_value = "certs/server.pem")]
-        cert: PathBuf,
-
-        /// Path to server private key
-        #[arg(long, default_value = "certs/server.key")]
-        key: PathBuf,
 
         /// TUN device name
         #[arg(short, long, default_value = "quicguard0")]
@@ -59,10 +50,6 @@ enum Commands {
         /// MTU for the tunnel
         #[arg(long, default_value = "1400")]
         mtu: u16,
-
-        /// Generate self-signed certificates
-        #[arg(long)]
-        generate_certs: bool,
 
         /// Enable verbose logging
         #[arg(short, long)]
@@ -107,17 +94,6 @@ enum Commands {
         #[arg(long)]
         insecure: bool,
     },
-
-    /// Generate certificates for testing
-    GenerateCerts {
-        /// Output directory
-        #[arg(short, long, default_value = "certs")]
-        output: PathBuf,
-
-        /// Server hostname
-        #[arg(long, default_value = "localhost")]
-        hostname: String,
-    },
 }
 
 fn main() {
@@ -132,33 +108,5 @@ fn main() {
             eprintln!("Please run the client binary directly: cargo run --bin client");
             eprintln!("Or use: cargo run --bin client -- --help");
         }
-        Commands::GenerateCerts { output, hostname } => {
-            if let Err(e) = generate_certs(&output, &hostname) {
-                eprintln!("Error generating certificates: {}", e);
-                std::process::exit(1);
-            }
-        }
     }
-}
-
-fn generate_certs(output: &PathBuf, hostname: &str) -> anyhow::Result<()> {
-    let cert_path = output.join("server.pem");
-    let key_path = output.join("server.key");
-
-    // Remove existing files to force regeneration
-    let _ = std::fs::remove_file(&cert_path);
-    let _ = std::fs::remove_file(&key_path);
-
-    certs::generate_certificates(&cert_path, &key_path, hostname)?;
-
-    // Copy cert as CA for clients
-    let ca_path = output.join("ca.pem");
-    std::fs::copy(&cert_path, &ca_path)?;
-
-    println!("Generated certificates in {:?}", output);
-    println!("  Server cert: {:?}", cert_path);
-    println!("  Server key:  {:?}", key_path);
-    println!("  CA cert:     {:?}", ca_path);
-
-    Ok(())
 }
