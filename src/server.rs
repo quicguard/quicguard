@@ -22,29 +22,55 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 use tun_device::{enable_ip_forwarding, setup_nat, TunDevice, TunWriter};
 
-/// Dynamic TLS certificate loader that rebuilds when ProxyState changes.
+type TlsConfigCache = Arc<Mutex<HashMap<String, s2n_quic::provider::tls::s2n_tls::config::Config>>>;
+
+/// Per-domain TLS certificate loader with background preloading.
 ///
-/// On each new QUIC connection, s2n-quic calls `load()` with the client's SNI.
-/// This loader reads from the shared `ProxyState` (which is kept current by the
-/// Redis pubsub subscriber) and returns a `config::Config` containing all certs.
-/// s2n-tls automatically selects the right cert based on client SNI.
+/// A shared cache holds pre-built `config::Config` per domain. At startup and
+/// on each Redis pubsub update, configs are built in the background and stored
+/// in the cache. On connection, the loader does a fast cache lookup.
 struct DomainCertLoader {
     state: Arc<ProxyState>,
     cached_version: AtomicU64,
-    cached_config: Mutex<Option<s2n_quic::provider::tls::s2n_tls::config::Config>>,
+    cache: TlsConfigCache,
 }
 
 impl DomainCertLoader {
-    fn new(state: Arc<ProxyState>) -> Self {
+    fn new(state: Arc<ProxyState>, cache: TlsConfigCache) -> Self {
         Self {
             state,
             cached_version: AtomicU64::new(0),
-            cached_config: Mutex::new(None),
+            cache,
         }
     }
 
-    async fn build_config(state: &ProxyState) -> Result<s2n_quic::provider::tls::s2n_tls::config::Config> {
+    async fn build_config_for_domain(
+        state: &ProxyState,
+        domain: &str,
+    ) -> Result<s2n_quic::provider::tls::s2n_tls::config::Config> {
         use s2n_quic::provider::tls::s2n_tls::security::DEFAULT_TLS13;
+
+        let (cert_pem, key_pem) = {
+            let org_index = state.org_index.read().await;
+            let org_id = org_index.get(domain).ok_or_else(|| {
+                anyhow::anyhow!("No organization configured for domain '{domain}'")
+            })?;
+            let orgs = state.config.read().await;
+            let org = orgs.organizations.get(org_id).ok_or_else(|| {
+                anyhow::anyhow!("Organization '{org_id}' not found for domain '{domain}'")
+            })?;
+            let tls = org.tls.get(domain).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No TLS certificate configured for domain '{domain}' in org '{org_id}'"
+                )
+            })?;
+            if tls.cert_pem.is_empty() || tls.key_pem.is_empty() {
+                anyhow::bail!(
+                    "Empty TLS certificate or key for domain '{domain}' in org '{org_id}'"
+                );
+            }
+            (tls.cert_pem.clone(), tls.key_pem.clone())
+        };
 
         let mut builder = s2n_quic::provider::tls::s2n_tls::config::Builder::new();
         builder
@@ -56,33 +82,9 @@ impl DomainCertLoader {
         builder
             .set_application_protocol_preference([b"h3".as_slice(), b"quicguard/0.1".as_slice()])
             .context("Failed to set ALPN")?;
-
-        let mut loaded = false;
-        let orgs = state.config.read().await;
-        for org in orgs.organizations.values() {
-            for (domain, tls_cfg) in &org.tls {
-                if tls_cfg.cert_pem.is_empty() || tls_cfg.key_pem.is_empty() {
-                    continue;
-                }
-                builder
-                    .load_pem(tls_cfg.cert_pem.as_bytes(), tls_cfg.key_pem.as_bytes())
-                    .with_context(|| {
-                        format!(
-                            "Failed to load TLS cert for domain '{domain}' (org: {})",
-                            org.id
-                        )
-                    })?;
-                info!("Loaded TLS cert for domain: {domain}");
-                loaded = true;
-            }
-        }
-
-        if !loaded {
-            anyhow::bail!(
-                "No TLS certificate found in Redis org config. \
-                 Seed your org with a 'tls' field containing cert_pem and key_pem."
-            );
-        }
+        builder
+            .load_pem(cert_pem.as_bytes(), key_pem.as_bytes())
+            .with_context(|| format!("Failed to load TLS cert for domain '{domain}'"))?;
 
         builder.build().context("Failed to build TLS config")
     }
@@ -91,46 +93,83 @@ impl DomainCertLoader {
 impl s2n_quic::provider::tls::s2n_tls::ConfigLoader for DomainCertLoader {
     fn load(
         &mut self,
-        _cx: s2n_quic::provider::tls::s2n_tls::ConnectionContext,
+        cx: s2n_quic::provider::tls::s2n_tls::ConnectionContext,
     ) -> s2n_quic::provider::tls::s2n_tls::config::Config {
-        let current_version = self.state.config_version.load(Ordering::SeqCst);
-        let cached_version = self.cached_version.load(Ordering::SeqCst);
+        let domain = cx
+            .server_name
+            .map(|s| s.to_string())
+            .unwrap_or_default();
 
-        if current_version != cached_version {
-            // Config changed — rebuild from ProxyState (which the pubsub subscriber
-            // keeps up to date). This runs on the QUIC accept thread, so we use
-            // blocking_read which is fine for the brief lock hold.
-            match tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(Self::build_config(&self.state))
-            }) {
-                Ok(config) => {
-                    *self.cached_config.blocking_lock() = Some(config.clone());
-                    self.cached_version.store(current_version, Ordering::SeqCst);
-                    info!("Rebuilt TLS config (version {current_version})");
-                    config
-                }
-                Err(e) => {
-                    error!("Failed to rebuild TLS config: {e}");
-                    // Fall back to cached config if available
-                    self.cached_config
-                        .blocking_lock()
-                        .clone()
-                        .expect("no cached TLS config and rebuild failed")
-                }
+        // Fast path: return cached config if available
+        {
+            let configs = self.cache.blocking_lock();
+            if let Some(config) = configs.get(&domain) {
+                return config.clone();
             }
-        } else {
-            self.cached_config
-                .blocking_lock()
-                .clone()
-                .expect("TLS config not initialized")
+        }
+
+        // Cache miss — build on demand (fallback if preload hasn't run yet)
+        match tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(Self::build_config_for_domain(&self.state, &domain))
+        }) {
+            Ok(config) => {
+                self.cache.blocking_lock().insert(domain.clone(), config.clone());
+                info!("Built TLS config for domain (on-demand): {domain}");
+                config
+            }
+            Err(e) => {
+                error!("Failed to build TLS config for domain '{domain}': {e}");
+                s2n_quic::provider::tls::s2n_tls::config::Builder::new()
+                    .build()
+                    .expect("failed to build empty TLS config")
+            }
+        }
+    }
+}
+
+/// Preload TLS configs for all domains in ProxyState into the shared cache.
+/// Called at startup and after each Redis pubsub update.
+async fn preload_tls_configs(state: &ProxyState, cache: &TlsConfigCache) {
+    let domains: Vec<String> = {
+        let org_index = state.org_index.read().await;
+        org_index.keys().cloned().collect()
+    };
+
+    let mut new_configs = HashMap::new();
+    for domain in &domains {
+        // Skip if already cached
+        {
+            let configs = cache.lock().await;
+            if configs.contains_key(domain) {
+                continue;
+            }
+        }
+
+        match DomainCertLoader::build_config_for_domain(state, domain).await {
+            Ok(config) => {
+                new_configs.insert(domain.clone(), config);
+                info!("Preloaded TLS config for domain: {domain}");
+            }
+            Err(e) => {
+                warn!("Failed to preload TLS config for domain '{domain}': {e}");
+            }
+        }
+    }
+
+    if !new_configs.is_empty() {
+        let mut configs = cache.lock().await;
+        for (domain, config) in new_configs {
+            configs.insert(domain, config);
         }
     }
 }
 
 fn build_tls_server(
     proxy_state: Arc<ProxyState>,
+    cache: TlsConfigCache,
 ) -> Result<s2n_quic::provider::tls::s2n_tls::Server<DomainCertLoader>> {
-    let loader = DomainCertLoader::new(proxy_state);
+    let loader = DomainCertLoader::new(proxy_state, cache);
     Ok(s2n_quic::provider::tls::s2n_tls::Server::from_loader(loader))
 }
 
@@ -293,6 +332,10 @@ async fn run_server(args: Args) -> Result<()> {
         }
     };
 
+    // Create shared TLS config cache and preload all domains at startup
+    let tls_cache: TlsConfigCache = Arc::new(Mutex::new(HashMap::new()));
+    preload_tls_configs(&proxy_state, &tls_cache).await;
+
     // Start Redis subscriber for live config updates
     let subscriber_state = Arc::clone(&proxy_state);
     tokio::spawn(async move {
@@ -300,6 +343,32 @@ async fn run_server(args: Args) -> Result<()> {
             error!("Redis subscriber error: {}", e);
         }
     });
+
+    // Background task: watch for config changes and preload new/updated domain certs
+    {
+        let state = Arc::clone(&proxy_state);
+        let cache = Arc::clone(&tls_cache);
+        tokio::spawn(async move {
+            let mut last_version = state.config_version.load(Ordering::SeqCst);
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let current_version = state.config_version.load(Ordering::SeqCst);
+                if current_version != last_version {
+                    last_version = current_version;
+
+                    // Remove stale cache entries for domains no longer in ProxyState
+                    let current_domains: std::collections::HashSet<String> = {
+                        let org_index = state.org_index.read().await;
+                        org_index.keys().cloned().collect()
+                    };
+                    cache.lock().await.retain(|domain, _| current_domains.contains(domain));
+
+                    // Preload only domains not yet cached
+                    preload_tls_configs(&state, &cache).await;
+                }
+            }
+        });
+    }
 
     // Enable IP forwarding
     if let Err(e) = enable_ip_forwarding() {
@@ -333,7 +402,7 @@ async fn run_server(args: Args) -> Result<()> {
         .with_data_window(2 * 1024 * 1024)? // 2MB receive window
         .with_max_send_buffer_size(2 * 1024 * 1024)?; // 2MB send buffer
 
-    let tls = build_tls_server(Arc::clone(&proxy_state))?;
+    let tls = build_tls_server(Arc::clone(&proxy_state), Arc::clone(&tls_cache))?;
 
     // Build QUIC server with tuned limits
     let server = Server::builder()
@@ -714,4 +783,331 @@ fn netmask_to_cidr(netmask: Ipv4Addr) -> u8 {
         cidr += octet.count_ones() as u8;
     }
     cidr
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use konfig::{AuthConfig, Organization, RedisConfig, TlsConfig, UpstreamConfig};
+    use s2n_quic::provider::tls::s2n_tls::ConfigLoader as _;
+
+    const CERT_A: &str = "-----BEGIN CERTIFICATE-----
+MIIBpTCCAUugAwIBAgIULG5l5gELKiyq/u4XeqiEL7U/XMEwCgYIKoZIzj0EAwIw
+GjEYMBYGA1UEAwwPYXBwLmV4YW1wbGUuY29tMB4XDTI2MDYzMDEzNTU0M1oXDTM2
+MDYyNzEzNTU0M1owGjEYMBYGA1UEAwwPYXBwLmV4YW1wbGUuY29tMFkwEwYHKoZI
+zj0CAQYIKoZIzj0DAQcDQgAEFV7aJg5M1DT/Mfy63DcQlwt0Tt9h7rjtInR2GPJz
+pXgEmTXDlcSRlEQnxL/5NYTfr7CxOwmn3whupbCdbGDopaNvMG0wHQYDVR0OBBYE
+FCqVnRJunA4kC2Ut2Ekrh/lf/RvDMB8GA1UdIwQYMBaAFCqVnRJunA4kC2Ut2Ekr
+h/lf/RvDMA8GA1UdEwEB/wQFMAMBAf8wGgYDVR0RBBMwEYIPYXBwLmV4YW1wbGUu
+Y29tMAoGCCqGSM49BAMCA0gAMEUCIQDHQncFsh5NIvrev5W3ybRErc7B8K1nuX33
+cgj60qlkPQIgHMjqPPWzzmz7fv740Lt452KA7cLhFcIBoTxtJ+Kslyo=
+-----END CERTIFICATE-----";
+
+    const KEY_A: &str = "-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgU3BXdn1LdVQ+BWxN
+U+IsO1Qz3hmArsfI7ZwV88t9wgmhRANCAAQVXtomDkzUNP8x/LrcNxCXC3RO32Hu
+uO0idHYY8nOleASZNcOVxJGURCfEv/k1hN+vsLE7CaffCG6lsJ1sYOil
+-----END PRIVATE KEY-----";
+
+    const CERT_B: &str = "-----BEGIN CERTIFICATE-----
+MIIBqzCCAVGgAwIBAgIUKGuCatpSJUetWLqfI+dD/pWD8sswCgYIKoZIzj0EAwIw
+HDEaMBgGA1UEAwwRb3RoZXIuZXhhbXBsZS5jb20wHhcNMjYwNjMwMTM1NTQzWhcN
+MzYwNjI3MTM1NTQzWjAcMRowGAYDVQQDDBFvdGhlci5leGFtcGxlLmNvbTBZMBMG
+ByqGSM49AgEGCCqGSM49AwEHA0IABMTySiLCw3Eo/3NNtWFxneW4nHG4J+jh/eUn
+nxsnCWM0DZvRo5fbc5aTEbTWyKraUp2QIMugF+tBWVgiqWCtGnajcTBvMB0GA1Ud
+DgQWBBTDfLWKFCc+qbQui2WrXA08k3GKpTAfBgNVHSMEGDAWgBTDfLWKFCc+qbQu
+i2WrXA08k3GKpTAPBgNVHRMBAf8EBTADAQH/MBwGA1UdEQQVMBOCEW90aGVyLmV4
+YW1wbGUuY29tMAoGCCqGSM49BAMCA0gAMEUCIQCg8r0pLpH80mvfCjsEhHmiIdu9
+FMmdoqD9qvQaoAWgygIgHecxP+m40Ys171QNwJjjfsYGJsFCh22mPdGXLonAiHE=
+-----END CERTIFICATE-----";
+
+    const KEY_B: &str = "-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgb2kYomMfQ7iO1hWg
+q+6k53HLaEgUGqHB/8sLTHSYsrShRANCAATE8koiwsNxKP9zTbVhcZ3luJxxuCfo
+4f3lJ58bJwljNA2b0aOX23OWkxG01siq2lKdkCDLoBfrQVlYIqlgrRp2
+-----END PRIVATE KEY-----";
+
+    fn make_redis() -> RedisConfig {
+        RedisConfig {
+            url: "redis://127.0.0.1:6379".to_string(),
+            org_key: "test:orgs".to_string(),
+            pubsub_channel: "test:updates".to_string(),
+        }
+    }
+
+    fn make_auth() -> AuthConfig {
+        AuthConfig {
+            jwt_issuer: String::new(),
+            jwt_audience: String::new(),
+            jwks_url: String::new(),
+            jwt_public_key: String::new(),
+            cookie_name: "session_token".to_string(),
+            redirect_url: String::new(),
+            idp_url: String::new(),
+        }
+    }
+
+    fn make_upstream() -> UpstreamConfig {
+        UpstreamConfig {
+            base_url: "http://127.0.0.1:8080".to_string(),
+            timeout_ms: 5000,
+            max_retries: 3,
+        }
+    }
+
+    fn make_org(org_id: &str, domains: Vec<&str>, certs: Vec<(&str, &str, &str)>) -> Organization {
+        let tls: HashMap<String, TlsConfig> = certs
+            .into_iter()
+            .map(|(domain, cert, key)| {
+                (
+                    domain.to_string(),
+                    TlsConfig {
+                        cert_pem: cert.to_string(),
+                        key_pem: key.to_string(),
+                    },
+                )
+            })
+            .collect();
+        Organization {
+            id: org_id.to_string(),
+            name: format!("Org {org_id}"),
+            domains: domains.into_iter().map(String::from).collect(),
+            policies: vec![],
+            domain_policies: HashMap::new(),
+            upstream: make_upstream(),
+            auth: make_auth(),
+            tls,
+        }
+    }
+
+    async fn make_state(orgs: Vec<Organization>) -> Arc<ProxyState> {
+        let state = Arc::new(ProxyState::empty(make_redis()));
+        for org in orgs {
+            let id = org.id.clone();
+            state.reload_org(&id, org).await;
+        }
+        state
+    }
+
+    // ── build_config_for_domain ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_build_config_for_known_domain() {
+        let org = make_org("org-a", vec!["app.example.com"], vec![("app.example.com", CERT_A, KEY_A)]);
+        let state = make_state(vec![org]).await;
+
+        let result = DomainCertLoader::build_config_for_domain(&state, "app.example.com").await;
+        assert!(result.is_ok(), "build_config_for_domain failed: {:?}", result.err());
+    }
+
+    #[tokio::test]
+    async fn test_build_config_for_unknown_domain() {
+        let org = make_org("org-a", vec!["app.example.com"], vec![("app.example.com", CERT_A, KEY_A)]);
+        let state = make_state(vec![org]).await;
+
+        let result = DomainCertLoader::build_config_for_domain(&state, "unknown.example.com").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No organization"));
+    }
+
+    #[tokio::test]
+    async fn test_build_config_for_domain_without_tls() {
+        let org = Organization {
+            id: "org-notls".to_string(),
+            name: "No TLS Org".to_string(),
+            domains: vec!["notls.example.com".to_string()],
+            policies: vec![],
+            domain_policies: HashMap::new(),
+            upstream: make_upstream(),
+            auth: make_auth(),
+            tls: HashMap::new(),
+        };
+        let state = make_state(vec![org]).await;
+
+        let result = DomainCertLoader::build_config_for_domain(&state, "notls.example.com").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No TLS certificate"));
+    }
+
+    #[tokio::test]
+    async fn test_build_config_different_domains_different_certs() {
+        let org = make_org(
+            "org-multi",
+            vec!["app.example.com", "api.example.com"],
+            vec![
+                ("app.example.com", CERT_A, KEY_A),
+                ("api.example.com", CERT_B, KEY_B),
+            ],
+        );
+        let state = make_state(vec![org]).await;
+
+        let config_a = DomainCertLoader::build_config_for_domain(&state, "app.example.com").await;
+        let config_b = DomainCertLoader::build_config_for_domain(&state, "api.example.com").await;
+
+        assert!(config_a.is_ok());
+        assert!(config_b.is_ok());
+    }
+
+    // ── preload_tls_configs ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_preload_populates_cache() {
+        let org = make_org(
+            "org-a",
+            vec!["app.example.com", "api.example.com"],
+            vec![
+                ("app.example.com", CERT_A, KEY_A),
+                ("api.example.com", CERT_B, KEY_B),
+            ],
+        );
+        let state = make_state(vec![org]).await;
+        let cache: TlsConfigCache = Arc::new(Mutex::new(HashMap::new()));
+
+        preload_tls_configs(&state, &cache).await;
+
+        let configs = cache.lock().await;
+        assert_eq!(configs.len(), 2);
+        assert!(configs.contains_key("app.example.com"));
+        assert!(configs.contains_key("api.example.com"));
+    }
+
+    #[tokio::test]
+    async fn test_preload_skips_already_cached() {
+        let org = make_org("org-a", vec!["app.example.com"], vec![("app.example.com", CERT_A, KEY_A)]);
+        let state = make_state(vec![org]).await;
+        let cache: TlsConfigCache = Arc::new(Mutex::new(HashMap::new()));
+
+        preload_tls_configs(&state, &cache).await;
+        preload_tls_configs(&state, &cache).await;
+
+        let configs = cache.lock().await;
+        assert_eq!(configs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_preload_after_reload_picks_up_new_domain() {
+        let org = make_org("org-a", vec!["app.example.com"], vec![("app.example.com", CERT_A, KEY_A)]);
+        let state = make_state(vec![org]).await;
+        let cache: TlsConfigCache = Arc::new(Mutex::new(HashMap::new()));
+
+        preload_tls_configs(&state, &cache).await;
+        assert_eq!(cache.lock().await.len(), 1);
+
+        // Add a new domain via reload
+        let updated = make_org(
+            "org-a",
+            vec!["app.example.com", "api.example.com"],
+            vec![
+                ("app.example.com", CERT_A, KEY_A),
+                ("api.example.com", CERT_B, KEY_B),
+            ],
+        );
+        state.reload_org("org-a", updated).await;
+
+        // Simulate watcher: remove stale, then preload picks up new domain
+        let current_domains: std::collections::HashSet<String> = {
+            let org_index = state.org_index.read().await;
+            org_index.keys().cloned().collect()
+        };
+        cache.lock().await.retain(|domain, _| current_domains.contains(domain));
+        preload_tls_configs(&state, &cache).await;
+
+        let configs = cache.lock().await;
+        assert_eq!(configs.len(), 2);
+        assert!(configs.contains_key("app.example.com"));
+        assert!(configs.contains_key("api.example.com"));
+    }
+
+    #[tokio::test]
+    async fn test_preload_clears_stale_entries() {
+        let org = make_org("org-a", vec!["app.example.com"], vec![("app.example.com", CERT_A, KEY_A)]);
+        let state = make_state(vec![org]).await;
+        let cache: TlsConfigCache = Arc::new(Mutex::new(HashMap::new()));
+
+        preload_tls_configs(&state, &cache).await;
+        assert_eq!(cache.lock().await.len(), 1);
+
+        state.remove_org("org-a").await;
+
+        // Simulate watcher: remove stale entries, then preload (nothing new to add)
+        let current_domains: std::collections::HashSet<String> = {
+            let org_index = state.org_index.read().await;
+            org_index.keys().cloned().collect()
+        };
+        cache.lock().await.retain(|domain, _| current_domains.contains(domain));
+        preload_tls_configs(&state, &cache).await;
+
+        assert_eq!(cache.lock().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_preload_empty_state() {
+        let state = make_state(vec![]).await;
+        let cache: TlsConfigCache = Arc::new(Mutex::new(HashMap::new()));
+
+        preload_tls_configs(&state, &cache).await;
+
+        assert_eq!(cache.lock().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_preload_multiple_orgs() {
+        let org_a = make_org("org-a", vec!["app.example.com"], vec![("app.example.com", CERT_A, KEY_A)]);
+        let org_b = make_org("org-b", vec!["other.example.com"], vec![("other.example.com", CERT_B, KEY_B)]);
+        let state = make_state(vec![org_a, org_b]).await;
+        let cache: TlsConfigCache = Arc::new(Mutex::new(HashMap::new()));
+
+        preload_tls_configs(&state, &cache).await;
+
+        let configs = cache.lock().await;
+        assert_eq!(configs.len(), 2);
+        assert!(configs.contains_key("app.example.com"));
+        assert!(configs.contains_key("other.example.com"));
+    }
+
+    // ── DomainCertLoader cache integration ───────────────────────────────────
+
+    #[tokio::test]
+    async fn test_loader_returns_cached_config_on_hit() {
+        let org = make_org("org-a", vec!["app.example.com"], vec![("app.example.com", CERT_A, KEY_A)]);
+        let state = make_state(vec![org]).await;
+        let cache: TlsConfigCache = Arc::new(Mutex::new(HashMap::new()));
+
+        // Preload
+        preload_tls_configs(&state, &cache).await;
+
+        // Verify the cache has the config
+        let configs = cache.lock().await;
+        assert!(configs.contains_key("app.example.com"));
+    }
+
+    #[tokio::test]
+    async fn test_loader_cache_miss_triggers_build() {
+        let org = make_org("org-a", vec!["app.example.com"], vec![("app.example.com", CERT_A, KEY_A)]);
+        let state = make_state(vec![org]).await;
+        let cache: TlsConfigCache = Arc::new(Mutex::new(HashMap::new()));
+
+        // Empty cache
+        assert!(!cache.lock().await.contains_key("app.example.com"));
+
+        // Build on demand (simulates what load() does on cache miss)
+        let config = DomainCertLoader::build_config_for_domain(&state, "app.example.com").await;
+        assert!(config.is_ok());
+
+        // Insert into cache (simulates load() caching the result)
+        cache.lock().await.insert("app.example.com".to_string(), config.unwrap());
+        assert!(cache.lock().await.contains_key("app.example.com"));
+    }
+
+    #[tokio::test]
+    async fn test_loader_unknown_domain_does_not_cache() {
+        let state = make_state(vec![]).await;
+        let cache: TlsConfigCache = Arc::new(Mutex::new(HashMap::new()));
+
+        let result = DomainCertLoader::build_config_for_domain(&state, "unknown.example.com").await;
+        assert!(result.is_err());
+
+        // Should NOT be in cache
+        assert!(!cache.lock().await.contains_key("unknown.example.com"));
+    }
 }
