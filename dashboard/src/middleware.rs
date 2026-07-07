@@ -20,6 +20,9 @@ pub async fn auth_middleware(
     mut request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    let path = request.uri().path().to_string();
+    tracing::debug!(path = %path, "auth_middleware: processing request");
+
     let token = request
         .headers()
         .get("Authorization")
@@ -28,19 +31,34 @@ pub async fn auth_middleware(
 
     let token = match token {
         Some(t) => t,
-        None => return Err(StatusCode::UNAUTHORIZED),
+        None => {
+            tracing::debug!(path = %path, "auth_middleware: no Bearer token found");
+            return Err(StatusCode::UNAUTHORIZED);
+        }
     };
 
-    let claims = validate_token(token, &config).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    tracing::debug!(path = %path, "auth_middleware: validating JWT token");
+    let claims = validate_token(token, &config).map_err(|e| {
+        tracing::debug!(path = %path, error = %e, "auth_middleware: invalid token");
+        StatusCode::UNAUTHORIZED
+    })?;
 
+    tracing::debug!(path = %path, user_id = %claims.sub, role = %claims.role,
+        "auth_middleware: fetching user from DB");
     let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
         .bind(Uuid::parse_str(&claims.sub).map_err(|_| StatusCode::UNAUTHORIZED)?)
         .fetch_optional(&pool)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            tracing::error!(path = %path, user_id = %claims.sub, error = %e,
+                "auth_middleware: DB error fetching user");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     match user {
         Some(u) if u.approved => {
+            tracing::debug!(path = %path, user_id = %u.id, email = %u.email, role = %u.role,
+                "auth_middleware: access granted");
             request.extensions_mut().insert(AuthUser {
                 id: u.id,
                 email: u.email,
@@ -50,7 +68,16 @@ pub async fn auth_middleware(
             request.extensions_mut().insert(config);
             Ok(next.run(request).await)
         }
-        _ => Err(StatusCode::FORBIDDEN),
+        Some(_) => {
+            tracing::debug!(path = %path, user_id = %claims.sub,
+                "auth_middleware: access denied (user not approved)");
+            Err(StatusCode::FORBIDDEN)
+        }
+        None => {
+            tracing::debug!(path = %path, user_id = %claims.sub,
+                "auth_middleware: access denied (user not found)");
+            Err(StatusCode::FORBIDDEN)
+        }
     }
 }
 
@@ -59,6 +86,9 @@ pub async fn admin_only(
     mut request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
+    let path = request.uri().path().to_string();
+    tracing::debug!(path = %path, "admin_only: processing request");
+
     let token = request
         .headers()
         .get("Authorization")
@@ -67,23 +97,40 @@ pub async fn admin_only(
 
     let token = match token {
         Some(t) => t,
-        None => return Err(StatusCode::UNAUTHORIZED),
+        None => {
+            tracing::debug!(path = %path, "admin_only: no Bearer token found");
+            return Err(StatusCode::UNAUTHORIZED);
+        }
     };
 
-    let claims = validate_token(token, &config).map_err(|_| StatusCode::UNAUTHORIZED)?;
+    tracing::debug!(path = %path, "admin_only: validating JWT token");
+    let claims = validate_token(token, &config).map_err(|e| {
+        tracing::debug!(path = %path, error = %e, "admin_only: invalid token");
+        StatusCode::UNAUTHORIZED
+    })?;
 
     if claims.role != "admin" {
+        tracing::debug!(path = %path, user_id = %claims.sub, role = %claims.role,
+            "admin_only: access denied (not admin)");
         return Err(StatusCode::FORBIDDEN);
     }
 
+    tracing::debug!(path = %path, user_id = %claims.sub,
+        "admin_only: fetching user from DB");
     let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
         .bind(Uuid::parse_str(&claims.sub).map_err(|_| StatusCode::UNAUTHORIZED)?)
         .fetch_optional(&pool)
         .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|e| {
+            tracing::error!(path = %path, user_id = %claims.sub, error = %e,
+                "admin_only: DB error fetching user");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
     match user {
         Some(u) if u.approved => {
+            tracing::debug!(path = %path, user_id = %u.id, email = %u.email,
+                "admin_only: admin access granted");
             request.extensions_mut().insert(AuthUser {
                 id: u.id,
                 email: u.email,
@@ -93,6 +140,15 @@ pub async fn admin_only(
             request.extensions_mut().insert(config);
             Ok(next.run(request).await)
         }
-        _ => Err(StatusCode::FORBIDDEN),
+        Some(_) => {
+            tracing::debug!(path = %path, user_id = %claims.sub,
+                "admin_only: access denied (user not approved)");
+            Err(StatusCode::FORBIDDEN)
+        }
+        None => {
+            tracing::debug!(path = %path, user_id = %claims.sub,
+                "admin_only: access denied (user not found)");
+            Err(StatusCode::FORBIDDEN)
+        }
     }
 }
