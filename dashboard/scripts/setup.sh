@@ -15,7 +15,7 @@ command -v npm >/dev/null 2>&1 || { echo "Error: npm not found. Install Node.js.
 # Start services
 echo "Starting Postgres and Redis..."
 cd "$ROOT_DIR/services"
-docker compose up -d
+sudo docker compose -f services.yaml up -d 
 echo "Waiting for Postgres..."
 sleep 3
 
@@ -34,13 +34,13 @@ cargo build --release
 echo "Running database migrations..."
 DATABASE_URL=$(grep DATABASE_URL .env | cut -d= -f2-)
 export DATABASE_URL
-./target/release/dashboard run-migrations
+../target/release/dashboard run-migrations
 
 # Create initial admin
 echo "Creating initial admin user..."
 ADMIN_EMAIL="${1:-admin@quicguard.local}"
 ADMIN_PASS="${2:-admin123}"
-./target/release/dashboard create-admin "$ADMIN_EMAIL" "$ADMIN_PASS" || true
+../target/release/dashboard create-admin "$ADMIN_EMAIL" "$ADMIN_PASS" || true
 
 # Build frontend
 echo "Building frontend..."
