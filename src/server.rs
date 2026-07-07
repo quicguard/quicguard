@@ -14,7 +14,6 @@ use s2n_quic::provider::limits::Limits;
 use s2n_quic::Server;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -26,12 +25,12 @@ type TlsConfigCache = Arc<Mutex<HashMap<String, s2n_quic::provider::tls::s2n_tls
 
 /// Per-domain TLS certificate loader with background preloading.
 ///
-/// A shared cache holds pre-built `config::Config` per domain. At startup and
-/// on each Redis pubsub update, configs are built in the background and stored
-/// in the cache. On connection, the loader does a fast cache lookup.
+/// A shared cache holds pre-built `config::Config` per domain. Configs are built
+/// at startup via `preload_tls_configs` and refreshed directly when a Redis
+/// pubsub update is received. The `load` method performs only a fast cache
+/// lookup — no on-demand TLS building.
 struct DomainCertLoader {
     state: Arc<ProxyState>,
-    cached_version: AtomicU64,
     cache: TlsConfigCache,
 }
 
@@ -39,7 +38,6 @@ impl DomainCertLoader {
     fn new(state: Arc<ProxyState>, cache: TlsConfigCache) -> Self {
         Self {
             state,
-            cached_version: AtomicU64::new(0),
             cache,
         }
     }
@@ -100,26 +98,11 @@ impl s2n_quic::provider::tls::s2n_tls::ConfigLoader for DomainCertLoader {
             .map(|s| s.to_string())
             .unwrap_or_default();
 
-        // Fast path: return cached config if available
-        {
-            let configs = self.cache.blocking_lock();
-            if let Some(config) = configs.get(&domain) {
-                return config.clone();
-            }
-        }
-
-        // Cache miss — build on demand (fallback if preload hasn't run yet)
-        match tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current()
-                .block_on(Self::build_config_for_domain(&self.state, &domain))
-        }) {
-            Ok(config) => {
-                self.cache.blocking_lock().insert(domain.clone(), config.clone());
-                info!("Built TLS config for domain (on-demand): {domain}");
-                config
-            }
-            Err(e) => {
-                error!("Failed to build TLS config for domain '{domain}': {e}");
+        let configs = self.cache.blocking_lock();
+        match configs.get(&domain) {
+            Some(config) => config.clone(),
+            None => {
+                error!("TLS config not preloaded for domain '{domain}' — connection will fail");
                 s2n_quic::provider::tls::s2n_tls::config::Builder::new()
                     .build()
                     .expect("failed to build empty TLS config")
@@ -129,7 +112,7 @@ impl s2n_quic::provider::tls::s2n_tls::ConfigLoader for DomainCertLoader {
 }
 
 /// Preload TLS configs for all domains in ProxyState into the shared cache.
-/// Called at startup and after each Redis pubsub update.
+/// Called once at startup.
 async fn preload_tls_configs(state: &ProxyState, cache: &TlsConfigCache) {
     let domains: Vec<String> = {
         let org_index = state.org_index.read().await;
@@ -337,34 +320,58 @@ async fn run_server(args: Args) -> Result<()> {
     preload_tls_configs(&proxy_state, &tls_cache).await;
 
     // Start Redis subscriber for live config updates
+    let (update_tx, mut update_rx) = tokio::sync::mpsc::channel::<konfig::OrgUpdate>(64);
     let subscriber_state = Arc::clone(&proxy_state);
     tokio::spawn(async move {
-        if let Err(e) = konfig::redis_subscriber(subscriber_state).await {
+        if let Err(e) = konfig::redis_subscriber(subscriber_state, update_tx).await {
             error!("Redis subscriber error: {}", e);
         }
     });
 
-    // Background task: watch for config changes and preload new/updated domain certs
+    // Task: handle config updates from Redis pubsub — update state + TLS cache
     {
         let state = Arc::clone(&proxy_state);
         let cache = Arc::clone(&tls_cache);
         tokio::spawn(async move {
-            let mut last_version = state.config_version.load(Ordering::SeqCst);
-            loop {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                let current_version = state.config_version.load(Ordering::SeqCst);
-                if current_version != last_version {
-                    last_version = current_version;
-
-                    // Remove stale cache entries for domains no longer in ProxyState
-                    let current_domains: std::collections::HashSet<String> = {
-                        let org_index = state.org_index.read().await;
-                        org_index.keys().cloned().collect()
-                    };
-                    cache.lock().await.retain(|domain, _| current_domains.contains(domain));
-
-                    // Preload only domains not yet cached
-                    preload_tls_configs(&state, &cache).await;
+            while let Some(update) = update_rx.recv().await {
+                match update.action.as_str() {
+                    "delete" => {
+                        // Capture domains before removal for TLS cache cleanup
+                        let domains: Vec<String> = {
+                            let config = state.config.read().await;
+                            config
+                                .organizations
+                                .get(&update.org_id)
+                                .map(|o| o.domains.clone())
+                                .unwrap_or_default()
+                        };
+                        state.remove_org(&update.org_id).await;
+                        let mut configs = cache.lock().await;
+                        for domain in &domains {
+                            configs.remove(domain);
+                            info!("Removed TLS cache for domain: {domain}");
+                        }
+                    }
+                    _ => {
+                        if let Some(org) = update.organization {
+                            let domains = org.domains.clone();
+                            state.reload_org(&update.org_id, org).await;
+                            // Build TLS configs for each domain in the updated org
+                            for domain in &domains {
+                                match DomainCertLoader::build_config_for_domain(&state, domain)
+                                    .await
+                                {
+                                    Ok(config) => {
+                                        cache.lock().await.insert(domain.clone(), config);
+                                        info!("Updated TLS config for domain: {domain}");
+                                    }
+                                    Err(e) => {
+                                        warn!("Failed to build TLS config for domain '{domain}': {e}");
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         });

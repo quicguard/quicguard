@@ -162,6 +162,7 @@ impl ProxyState {
 
 pub async fn redis_subscriber(
     state: std::sync::Arc<ProxyState>,
+    updates: tokio::sync::mpsc::Sender<OrgUpdate>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let client = redis::Client::open(state.redis_config.url.as_str())?;
     let mut pubsub = client.get_async_pubsub().await?;
@@ -175,18 +176,8 @@ pub async fn redis_subscriber(
     while let Some(msg) = msg_stream.next().await {
         let payload: String = msg.get_payload()?;
 
-        match serde_json::from_str::<OrgUpdate>(&payload) {
-            Ok(update) => match update.action.as_str() {
-                "delete" => {
-                    state.remove_org(&update.org_id).await;
-                }
-                _ => {
-                    if let Some(org) = update.organization {
-                        state.reload_org(&update.org_id, org).await;
-                    }
-                }
-            },
-            Err(_) => {}
+        if let Ok(update) = serde_json::from_str::<OrgUpdate>(&payload) {
+            let _ = updates.send(update).await;
         }
     }
 
