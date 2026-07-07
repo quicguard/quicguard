@@ -84,19 +84,14 @@ sudo cp target/release/server /opt/quicguard/
 sudo chmod 755 /opt/quicguard/server
 ```
 
-#### 2. Generate Certificates
+#### 2. Seed Redis with Configuration
+
+TLS certificates are loaded from Redis per-organization, not from disk files.
+Run the seed script to populate Redis with a sample org including TLS certs:
 
 ```bash
-# Generate self-signed certificates
-cd /opt/quicguard
-sudo ./server --generate-certs
-
-# Or use your own certificates
-sudo cp /path/to/your/server.pem certs/
-sudo cp /path/to/your/server.key certs/
-
-# For clients, copy the CA certificate
-sudo cp certs/server.pem certs/ca.pem
+cd konfig
+./scripts/seed-redis.sh
 ```
 
 #### 3. Configure Firewall
@@ -132,8 +127,6 @@ After=network.target
 Type=simple
 ExecStart=/opt/quicguard/server \
     --listen 0.0.0.0:4433 \
-    --cert /opt/quicguard/certs/server.pem \
-    --key /opt/quicguard/certs/server.key \
     --server-ip 10.0.0.1 \
     --enable-nat \
     --external-interface eth0
@@ -191,9 +184,11 @@ chmod +x ~/quicguard/connect.sh
 #### Terminal 1 - Server (requires root)
 
 ```bash
-# Generate certificates and start server
+# Seed Redis first (includes TLS certs)
+cd konfig && ./scripts/seed-redis.sh
+
+# Start server
 sudo ./target/release/server \
-    --generate-certs \
     --enable-nat \
     --external-interface eth0 \
     --verbose
@@ -231,14 +226,6 @@ Options:
           Listen address (IP:port)
           [default: 0.0.0.0:4433]
 
-      --cert <CERT>
-          Path to server certificate
-          [default: certs/server.pem]
-
-      --key <KEY>
-          Path to server private key
-          [default: certs/server.key]
-
   -t, --tun-name <TUN_NAME>
           TUN device name
           [default: masque0]
@@ -266,12 +253,32 @@ Options:
           MTU for the tunnel
           [default: 1400]
 
-      --generate-certs
-          Generate self-signed certificates if not present
+      --redis-url <REDIS_URL>
+          Redis URL for configuration
+          [default: redis://127.0.0.1:6379]
+
+      --redis-org-key <REDIS_ORG_KEY>
+          Redis hash key for organization configs
+          [default: quicguard:organizations]
+
+      --redis-pubsub-channel <REDIS_PUBSUB_CHANNEL>
+          Redis pubsub channel for live config updates
+          [default: quicguard:updates]
+
+      --redirect-url <REDIRECT_URL>
+          Redirect URL for unauthenticated requests
+
+      --idp-url <IDP_URL>
+          Identity Provider URL. Users are redirected here when
+          no token, or token is invalid/expired (per-customer).
 
   -v, --verbose
           Enable verbose logging
 ```
+
+> **Note:** JWT auth settings (`jwt_issuer`, `jwt_audience`, `jwt_public_key`, `cookie_name`)
+> and per-domain TLS certificates are configured per-organization in Redis, not via CLI arguments.
+> See [konfig/README.md](konfig/README.md) for the full configuration schema.
 
 ### Client Options
 
@@ -313,3 +320,49 @@ Options:
       --insecure
           Skip TLS certificate verification (testing only)
 ```
+
+## IDP Integration
+
+QuicGuard supports Identity Provider (IDP) integration for the HTTP/3 proxy mode. Each customer can configure their own IDP URL.
+
+### How It Works
+
+```
+1. User visits proxy → no token cookie
+2. Proxy returns 302 → {idp_url}?redirect_uri={original_url}
+3. User authenticates at IDP
+4. IDP redirects back → {original_url}?token={jwt}
+5. Proxy sees ?token= → sets Set-Cookie header → 302 to clean URL
+6. Subsequent requests use the cookie
+```
+
+### Configuration
+
+Set the `auth` and `tls` fields per organization in Redis:
+
+```json
+{
+    "auth": {
+        "jwt_issuer": "https://auth.example.com",
+        "jwt_audience": "quicguard-proxy",
+        "jwt_public_key": "...",
+        "cookie_name": "session_token",
+        "redirect_url": "https://auth.example.com/login",
+        "idp_url": "https://auth.example.com/idp"
+    },
+    "tls": {
+        "app.example.com": {
+            "cert_pem": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
+            "key_pem": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+        }
+    }
+}
+```
+
+### Behavior
+
+- **Missing token**: 302 redirect to `{idp_url}?redirect_uri={encoded_url}`
+- **Invalid/expired token**: Same 302 redirect to IDP
+- **Token in query param** (`?token=jwt`): Sets `Set-Cookie` with `HttpOnly; Secure; SameSite=Lax`, then 302 redirects to clean URL
+- **Valid token in cookie**: Normal proxy flow
+- If `idp_url` is empty, falls back to `redirect_url`. If both are empty, returns 401.

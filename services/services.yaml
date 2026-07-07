@@ -1,0 +1,25 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7.2-alpine
+    restart: unless-stopped
+    command: redis-server --include /usr/local/etc/redis/redis.conf
+    hostname: redis
+    user: root
+    environment:
+      - REDIS_PASSWORD=123456
+    ports:
+      - "6379:6379"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "512M" 
+    volumes:
+      - ./redis.conf:/usr/local/etc/redis/redis.conf
+      - redis-data:/data"
+
+volumes:
+  redis-data:
+    driver: local
