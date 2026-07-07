@@ -3,10 +3,6 @@ import { authStore } from './auth.js';
 
 const BASE = '/api';
 
-/**
- * @param {string} path
- * @param {RequestInit} [options]
- */
 async function request(path, options = {}) {
   const { token } = get(authStore);
   const headers = {
@@ -43,10 +39,19 @@ export const api = {
 
   orgs: {
     list: () => request('/organizations'),
-    create: (id, name, config) =>
-      request('/organizations', { method: 'POST', body: JSON.stringify({ id, name, config }) }),
-    update: (id, data) =>
+    get: (id) => request(`/organizations/${id}`),
+    create: (data) =>
+      request('/organizations', { method: 'POST', body: JSON.stringify(data) }),
+    updateRaw: (id, data) =>
       request(`/organizations/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id) => request(`/organizations/${id}`, { method: 'DELETE' }),
+    addPolicy: (id, data) =>
+      request(`/organizations/${id}/policies`, { method: 'POST', body: JSON.stringify(data) }),
+    removePolicy: (id, policyId) =>
+      request(`/organizations/${id}/policies/${policyId}`, { method: 'DELETE' }),
+    addDomainPolicy: (id, data) =>
+      request(`/organizations/${id}/domain-policies`, { method: 'POST', body: JSON.stringify(data) }),
+    removeDomainPolicy: (id, domain, policyId) =>
+      request(`/organizations/${id}/domain-policies/${domain}/${policyId}`, { method: 'DELETE' }),
   },
 };

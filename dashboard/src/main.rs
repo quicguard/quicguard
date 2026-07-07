@@ -1,6 +1,7 @@
 mod auth;
 mod config;
 mod db;
+mod generate;
 mod middleware;
 mod models;
 mod redis_sync;
