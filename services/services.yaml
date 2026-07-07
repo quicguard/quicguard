@@ -15,11 +15,30 @@ services:
       resources:
         limits:
           cpus: "0.5"
-          memory: "512M" 
+          memory: "512M"
     volumes:
       - ./redis.conf:/usr/local/etc/redis/redis.conf
-      - redis-data:/data"
+      - redis-data:/data
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: quicguard
+      POSTGRES_USER: quicguard
+      POSTGRES_PASSWORD: quicguard
+    ports:
+      - "5432:5432"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "512M"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
 
 volumes:
   redis-data:
+    driver: local
+  pgdata:
     driver: local
