@@ -1,14 +1,11 @@
-mod auth;
-mod config;
-mod db;
-mod generate;
-mod middleware;
-mod models;
-mod redis_sync;
-mod routes;
-
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
+
+use dashboard::auth;
+use dashboard::config;
+use dashboard::db;
+use dashboard::middleware;
+use dashboard::routes;
 
 #[derive(Parser)]
 #[command(name = "dashboard", about = "QuicGuard Dashboard")]
