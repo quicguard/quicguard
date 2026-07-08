@@ -9,6 +9,7 @@ A high-performance VPN implementation inspired by WireGuard, built using HTTP/3 
 - [Building](#building)
 - [Deployment](#deployment)
 - [Usage](#usage)
+- [Dashboard](#dashboard)
 
 ## Overview
 
@@ -319,6 +320,94 @@ Options:
 
       --insecure
           Skip TLS certificate verification (testing only)
+```
+
+## Dashboard
+
+A web-based management dashboard for configuring organizations, users, and policies. The dashboard syncs configurations to Redis in real-time so the running QUIC server picks up changes instantly.
+
+### Quick Start
+
+```bash
+# 1. Start Postgres and Redis
+cd services && docker compose -f services.yaml up -d
+cd ..
+
+# 2. Run the setup script
+cd dashboard && bash scripts/setup.sh
+
+# 3. Start the dashboard
+cargo run --release
+# Dashboard at http://localhost:3000
+```
+
+### Features
+
+- **User Management**: Admin can create/approve/delete customer accounts
+- **Organization Config**: Structured forms for domains, upstream, auth, TLS, and policies
+- **Auto-generation**: JWT key pairs and TLS certificates can be auto-generated
+- **Policy Management**: Add/remove org-level and domain-specific access policies
+- **Real-time Sync**: Config changes publish to Redis via `quicguard:updates` pubsub channel
+
+### Architecture
+
+```
+Svelte SPA ──▶ Axum Backend ──▶ Postgres (users, orgs)
+                    │
+                    └──────────▶ Redis (pubsub + org configs)
+```
+
+### API Endpoints
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/auth/signup` | None | Register (pending approval) |
+| POST | `/api/auth/login` | None | Login, get JWT |
+| GET | `/api/auth/me` | Any | Current user info |
+| GET | `/api/admin/users` | Admin | List all users |
+| PUT | `/api/admin/users/:id/approve` | Admin | Approve user |
+| DELETE | `/api/admin/users/:id` | Admin | Delete user |
+| GET | `/api/admin/organizations` | Admin | List all orgs |
+| GET | `/api/organizations` | Customer | List own orgs |
+| POST | `/api/organizations` | Customer | Create org |
+| PUT | `/api/organizations/:id` | Customer | Update org |
+| DELETE | `/api/organizations/:id` | Customer | Delete org |
+| POST | `/api/organizations/:id/policies` | Customer | Add policy |
+| DELETE | `/api/organizations/:id/policies/:pid` | Customer | Remove policy |
+| POST | `/api/organizations/:id/domain-policies` | Customer | Add domain policy |
+| DELETE | `/api/organizations/:id/domain-policies/:domain/:pid` | Customer | Remove domain policy |
+
+### Configuration
+
+Copy `.env.example` to `.env` and configure:
+
+```env
+DATABASE_URL=postgres://quicguard:quicguard@localhost:5432/quicguard
+REDIS_URL=redis://127.0.0.1:6379
+JWT_SECRET=your-secret-key
+SERVER_PORT=3000
+```
+
+### Testing
+
+```bash
+# Unit tests (no dependencies)
+cargo test -p dashboard --lib
+
+# Integration tests (requires Postgres)
+bash scripts/run-tests.sh
+
+# With Docker for Postgres
+bash scripts/run-tests.sh --docker
+```
+
+### Frontend Development
+
+```bash
+cd frontend
+npm install
+npm run dev    # Dev server on :5173 with API proxy to :3000
+npm run build  # Build to ../static/
 ```
 
 ## IDP Integration
