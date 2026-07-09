@@ -117,11 +117,3 @@ pub struct AddDomainPolicy {
     pub effect: Option<String>,
     pub rules: Vec<PolicyRuleInput>,
 }
-
-// --- Legacy input for raw JSON update ---
-
-#[derive(Debug, Deserialize)]
-pub struct UpdateOrganizationRaw {
-    pub name: Option<String>,
-    pub config: Option<serde_json::Value>,
-}

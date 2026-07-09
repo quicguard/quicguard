@@ -54,6 +54,24 @@
   let polEffect = 'Allow';
   let polRules = [{ resourceType: 'prefix', resourceValue: '/', methods: ['GET'], conditions: [] }];
 
+  // --- Edit org ---
+  let editingOrg = false;
+  let editStep = 1;
+  let saving = false;
+  let editError = '';
+  let editName = '';
+  let editDomains = [''];
+  let editUpstreamUrl = '';
+  let editUpstreamTimeout = 5000;
+  let editJwtIssuer = '';
+  let editJwtAudience = '';
+  let editAutoGenerateJwt = false;
+  let editJwtPublicKey = '';
+  let editCookieName = '';
+  let editRedirectUrl = '';
+  let editIdpUrl = '';
+  let editTlsConfigs = [];
+
   onMount(() => {
     const unsub = authStore.subscribe(v => {
       user = v.user;
@@ -235,6 +253,86 @@
     orgDetail = null;
     showPolicyForm = false;
     showDomainPolicyForm = false;
+    editingOrg = false;
+  }
+
+  // --- Edit org ---
+  function enterEditMode() {
+    if (!orgDetail) return;
+    editingOrg = true;
+    editStep = 1;
+    editError = '';
+
+    editName = orgDetail.name || '';
+    editDomains = [...(orgDetail.config.domains || [])];
+    if (editDomains.length === 0) editDomains = [''];
+    editUpstreamUrl = orgDetail.config.upstream?.base_url || '';
+    editUpstreamTimeout = orgDetail.config.upstream?.timeout_ms || 5000;
+    editJwtIssuer = orgDetail.config.auth?.jwt_issuer || '';
+    editJwtAudience = orgDetail.config.auth?.jwt_audience || '';
+    editAutoGenerateJwt = false;
+    editJwtPublicKey = orgDetail.config.auth?.jwt_public_key || '';
+    editCookieName = orgDetail.config.auth?.cookie_name || '';
+    editRedirectUrl = orgDetail.config.auth?.redirect_url || '';
+    editIdpUrl = orgDetail.config.auth?.idp_url || '';
+
+    editTlsConfigs = Object.entries(orgDetail.config.tls || {}).map(([domain, tls]) => ({
+      domain,
+      cert_pem: tls.cert_pem || '',
+      key_pem: tls.key_pem || '',
+      auto_generate: false,
+    }));
+  }
+
+  function cancelEdit() {
+    editingOrg = false;
+    editError = '';
+  }
+
+  function addEditDomainField() {
+    editDomains = [...editDomains, ''];
+  }
+
+  function removeEditDomainField(i) {
+    editDomains = editDomains.filter((_, idx) => idx !== i);
+  }
+
+  async function submitEditOrg() {
+    if (!selectedOrg) return;
+    saving = true;
+    editError = '';
+    try {
+      const validDomains = editDomains.filter(d => d.trim());
+      const tls = editTlsConfigs.map(t => ({
+        domain: t.domain,
+        cert_pem: t.auto_generate ? null : (t.cert_pem || null),
+        key_pem: t.auto_generate ? null : (t.key_pem || null),
+        auto_generate: t.auto_generate,
+      }));
+
+      await api.orgs.updateRaw(selectedOrg.id, {
+        name: editName.trim() || undefined,
+        domains: validDomains.length > 0 ? validDomains : undefined,
+        upstream_base_url: editUpstreamUrl.trim() || undefined,
+        upstream_timeout_ms: editUpstreamTimeout || undefined,
+        jwt_issuer: editJwtIssuer.trim() || undefined,
+        jwt_audience: editJwtAudience.trim() || undefined,
+        jwt_public_key: editAutoGenerateJwt ? null : (editJwtPublicKey || undefined),
+        auto_generate_jwt_keys: editAutoGenerateJwt,
+        cookie_name: editCookieName || undefined,
+        redirect_url: editRedirectUrl || undefined,
+        idp_url: editIdpUrl || undefined,
+        tls_configs: tls.length > 0 ? tls : undefined,
+      });
+
+      const res = await api.orgs.get(selectedOrg.id);
+      orgDetail = res;
+      editingOrg = false;
+    } catch (e) {
+      editError = e.message || 'Failed to update organization';
+    } finally {
+      saving = false;
+    }
   }
 
   async function deleteOrg(id) {
@@ -366,11 +464,15 @@
         <div class="detail-header">
           <h2>{orgDetail.name} <code>{orgDetail.id}</code></h2>
           <div>
+            {#if !editingOrg}
+              <button class="btn-edit" on:click={enterEditMode}>Edit</button>
+            {/if}
             <button class="btn-cancel" on:click={closeDetail}>Back to list</button>
             <button class="btn-delete" on:click={() => deleteOrg(orgDetail.id)}>Delete Org</button>
           </div>
         </div>
 
+        {#if !editingOrg}
         <!-- Domains -->
         <div class="detail-section">
           <h3>Domains</h3>
@@ -410,6 +512,91 @@
             <span class="muted">No TLS configured</span>
           {/each}
         </div>
+        {/if}
+
+        <!-- Edit wizard -->
+        {#if editingOrg}
+          <div class="edit-wizard card">
+            <h3>Edit Organization</h3>
+            {#if editError}
+              <div class="error">{editError}</div>
+            {/if}
+
+            <div class="steps">
+              {#each ['Basic Info', 'Domains', 'Auth', 'TLS'] as step, i}
+                <span class="step" class:active={editStep === i + 1} class:done={editStep > i + 1}>
+                  {i + 1}. {step}
+                </span>
+              {/each}
+            </div>
+
+            {#if editStep === 1}
+              <div class="step-content">
+                <label>Name <input bind:value={editName} placeholder="Organization name" /></label>
+                <label>Upstream URL <input bind:value={editUpstreamUrl} placeholder="http://localhost:8080" /></label>
+                <label>Upstream Timeout (ms) <input type="number" bind:value={editUpstreamTimeout} /></label>
+              </div>
+            {:else if editStep === 2}
+              <div class="step-content">
+                {#each editDomains as _, i}
+                  <div class="domain-row">
+                    <input bind:value={editDomains[i]} placeholder="app.example.com" />
+                    {#if editDomains.length > 1}
+                      <button class="btn-delete-sm" on:click={() => removeEditDomainField(i)}>x</button>
+                    {/if}
+                  </div>
+                {/each}
+                <button class="btn-add-sm" on:click={addEditDomainField}>+ Add Domain</button>
+              </div>
+            {:else if editStep === 3}
+              <div class="step-content">
+                <label>JWT Issuer <input bind:value={editJwtIssuer} placeholder="https://auth.example.com" /></label>
+                <label>JWT Audience <input bind:value={editJwtAudience} placeholder="quicguard-proxy" /></label>
+                <label class="check-label">
+                  <input type="checkbox" bind:checked={editAutoGenerateJwt} /> Regenerate JWT key pair
+                </label>
+                {#if !editAutoGenerateJwt}
+                  <label>JWT Public Key (PEM) <textarea bind:value={editJwtPublicKey} rows="4"></textarea></label>
+                {/if}
+                <label>Cookie Name <input bind:value={editCookieName} /></label>
+                <label>Redirect URL <input bind:value={editRedirectUrl} /></label>
+                <label>IDP URL <input bind:value={editIdpUrl} /></label>
+              </div>
+            {:else if editStep === 4}
+              <div class="step-content">
+                {#if editTlsConfigs.length === 0}
+                  <p class="muted">No TLS configurations.</p>
+                {/if}
+                {#each editTlsConfigs as tls, i}
+                  <div class="tls-card">
+                    <h4>{tls.domain}</h4>
+                    <label class="check-label">
+                      <input type="checkbox" bind:checked={tls.auto_generate} /> Regenerate certificate
+                    </label>
+                    {#if !tls.auto_generate}
+                      <label>Certificate PEM <textarea bind:value={tls.cert_pem} rows="3"></textarea></label>
+                      <label>Private Key PEM <textarea bind:value={tls.key_pem} rows="3"></textarea></label>
+                    {/if}
+                  </div>
+                {/each}
+              </div>
+            {/if}
+
+            <div class="wizard-nav">
+              {#if editStep > 1}
+                <button class="btn-cancel" on:click={() => editStep--}>Back</button>
+              {/if}
+              {#if editStep < 4}
+                <button class="btn-save" on:click={() => editStep++}>Next</button>
+              {:else}
+                <button class="btn-save" on:click={submitEditOrg} disabled={saving}>
+                  {saving ? 'Saving...' : 'Save Changes'}
+                </button>
+              {/if}
+              <button class="btn-cancel" on:click={cancelEdit}>Cancel</button>
+            </div>
+          </div>
+        {/if}
 
         <!-- Policies -->
         <div class="detail-section">
@@ -843,4 +1030,5 @@
   .step-content { min-height: 200px; }
   .wizard-nav { display: flex; gap: 0.5rem; margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid #eee; }
   .tls-card { background: #f8f9fa; border: 1px solid #eee; border-radius: 6px; padding: 1rem; margin: 0.5rem 0; }
+  .edit-wizard { margin-top: 1rem; }
 </style>

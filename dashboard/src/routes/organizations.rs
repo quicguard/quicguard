@@ -13,7 +13,7 @@ use crate::{
     middleware::AuthUser,
     models::{
         AddDomainPolicy, AddPolicy, CreateOrganizationStructured, Organization,
-        UpdateOrganizationRaw,
+        UpdateOrganizationStructured,
     },
     redis_sync,
 };
@@ -114,6 +114,103 @@ fn build_org_config(input: &CreateOrganizationStructured) -> Result<Value, Strin
 
     tracing::debug!(org_id = %input.id, config_size = config.to_string().len(),
         "Org config built successfully");
+    Ok(config)
+}
+
+fn build_update_config(
+    input: &UpdateOrganizationStructured,
+    existing_config: &Value,
+) -> Result<Value, String> {
+    let mut config = existing_config.clone();
+    let config_obj = config.as_object_mut().ok_or("Config is not a JSON object")?;
+
+    // Update domains
+    if let Some(domains) = &input.domains {
+        config_obj.insert("domains".to_string(), json!(domains));
+    }
+
+    // Update upstream fields
+    if let Some(upstream) = config_obj.get_mut("upstream") {
+        if let Some(base_url) = &input.upstream_base_url {
+            upstream["base_url"] = json!(base_url);
+        }
+        if let Some(timeout) = &input.upstream_timeout_ms {
+            upstream["timeout_ms"] = json!(timeout);
+        }
+        if let Some(retries) = &input.upstream_max_retries {
+            upstream["max_retries"] = json!(retries);
+        }
+    }
+
+    // Update auth fields
+    if let Some(auth) = config_obj.get_mut("auth") {
+        if let Some(issuer) = &input.jwt_issuer {
+            auth["jwt_issuer"] = json!(issuer);
+        }
+        if let Some(audience) = &input.jwt_audience {
+            auth["jwt_audience"] = json!(audience);
+        }
+        if let Some(cookie) = &input.cookie_name {
+            auth["cookie_name"] = json!(cookie);
+        }
+        if let Some(redirect) = &input.redirect_url {
+            auth["redirect_url"] = json!(redirect);
+        }
+        if let Some(idp) = &input.idp_url {
+            auth["idp_url"] = json!(idp);
+        }
+
+        // JWT key handling
+        match input.auto_generate_jwt_keys {
+            Some(true) => {
+                let keys = generate::generate_jwt_keys().map_err(|e| {
+                    tracing::error!(error = %e, "Failed to generate JWT keys");
+                    e.to_string()
+                })?;
+                auth["jwt_public_key"] = json!(keys.public_key);
+            }
+            Some(false) => {
+                if let Some(pub_key) = &input.jwt_public_key {
+                    auth["jwt_public_key"] = json!(pub_key);
+                }
+                // If no key provided and auto_generate=false, keep existing
+            }
+            None => {
+                if let Some(pub_key) = &input.jwt_public_key {
+                    auth["jwt_public_key"] = json!(pub_key);
+                }
+            }
+        }
+    }
+
+    // Update TLS configs
+    if let Some(tls_inputs) = &input.tls_configs {
+        let tls = config_obj
+            .entry("tls".to_string())
+            .or_insert_with(|| json!({}));
+        let tls_obj = tls.as_object_mut().ok_or("TLS config is not a JSON object")?;
+
+        for tls_input in tls_inputs {
+            if tls_input.auto_generate {
+                let cert = generate::generate_tls_cert(&tls_input.domain).map_err(|e| {
+                    tracing::error!(domain = %tls_input.domain, error = %e,
+                        "Failed to generate TLS certificate");
+                    e.to_string()
+                })?;
+                tls_obj.insert(tls_input.domain.clone(), json!({
+                    "cert_pem": cert.cert_pem,
+                    "key_pem": cert.key_pem
+                }));
+            } else if let (Some(cert), Some(key)) = (&tls_input.cert_pem, &tls_input.key_pem) {
+                tls_obj.insert(tls_input.domain.clone(), json!({
+                    "cert_pem": cert,
+                    "key_pem": key
+                }));
+            }
+            // If auto_generate=false and no cert/key, preserve existing
+        }
+    }
+
     Ok(config)
 }
 
@@ -301,7 +398,7 @@ async fn update_org(
     State((pool, config)): State<(DbPool, Config)>,
     Path(org_id): Path<String>,
     auth_user: axum::extract::Extension<AuthUser>,
-    Json(input): Json<UpdateOrganizationRaw>,
+    Json(input): Json<UpdateOrganizationStructured>,
 ) -> Result<Json<Value>, StatusCode> {
     tracing::debug!(org_id = %org_id, user_id = %auth_user.id, "PUT /api/organizations/{}", org_id);
 
@@ -325,14 +422,17 @@ async fn update_org(
         }
     };
 
-    if let Some(name) = input.name {
+    if let Some(name) = &input.name {
         tracing::debug!(org_id = %org_id, new_name = %name, "Updating org name");
-        org.name = name;
+        org.name = name.clone();
     }
-    if let Some(config_val) = input.config {
-        tracing::debug!(org_id = %org_id, "Updating org config (raw JSON)");
-        org.config = config_val;
-    }
+
+    // Merge partial updates into existing config
+    let org_config = build_update_config(&input, &org.config).map_err(|e| {
+        tracing::error!(org_id = %org_id, error = %e, "Failed to build update config");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    org.config = org_config;
 
     tracing::debug!(org_id = %org_id, "Saving updated org to DB");
     let updated = sqlx::query_as::<_, Organization>(
