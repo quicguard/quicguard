@@ -102,10 +102,8 @@ async fn test_all_routes_with_middleware() {
         ("GET", "/api/organizations/test-id"),
         ("PUT", "/api/organizations/test-id"),
         ("DELETE", "/api/organizations/test-id"),
-        ("POST", "/api/organizations/test-id/policies"),
-        ("DELETE", "/api/organizations/test-id/policies/pol-1"),
-        ("POST", "/api/organizations/test-id/domain-policies"),
-        ("DELETE", "/api/organizations/test-id/domain-policies/app.example.com/pol-1"),
+        ("POST", "/api/organizations/test-id/domains/app.example.com/policies"),
+        ("DELETE", "/api/organizations/test-id/domains/app.example.com/policies/pol-1"),
     ];
 
     for (method, path) in tests {
@@ -169,10 +167,8 @@ async fn test_full_server_routing() {
         ("GET", "/api/organizations/test-id"),
         ("PUT", "/api/organizations/test-id"),
         ("DELETE", "/api/organizations/test-id"),
-        ("POST", "/api/organizations/test-id/policies"),
-        ("DELETE", "/api/organizations/test-id/policies/pol-1"),
-        ("POST", "/api/organizations/test-id/domain-policies"),
-        ("DELETE", "/api/organizations/test-id/domain-policies/app.example.com/pol-1"),
+        ("POST", "/api/organizations/test-id/domains/app.example.com/policies"),
+        ("DELETE", "/api/organizations/test-id/domains/app.example.com/policies/pol-1"),
     ];
 
     for (method, path) in tests {

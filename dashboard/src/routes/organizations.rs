@@ -11,10 +11,7 @@ use crate::{
     db::DbPool,
     generate,
     middleware::AuthUser,
-    models::{
-        AddDomainPolicy, AddPolicy, CreateOrganizationStructured, Organization,
-        UpdateOrganizationStructured,
-    },
+    models::{AddPolicy, CreateOrganization, Organization, UpdateOrganization},
     redis_sync,
 };
 
@@ -25,21 +22,20 @@ pub fn org_router() -> Router<(DbPool, Config)> {
         .route("/{id}", axum::routing::get(get_org))
         .route("/{id}", axum::routing::put(update_org))
         .route("/{id}", axum::routing::delete(delete_org))
-        .route("/{id}/policies", axum::routing::post(add_policy))
-        .route("/{id}/policies/{policy_id}", axum::routing::delete(remove_policy))
-        .route("/{id}/domain-policies", axum::routing::post(add_domain_policy))
-        .route("/{id}/domain-policies/{domain}/{policy_id}", axum::routing::delete(remove_domain_policy))
+        .route(
+            "/{id}/domains/{domain}/policies",
+            axum::routing::post(add_domain_policy),
+        )
+        .route(
+            "/{id}/domains/{domain}/policies/{policy_id}",
+            axum::routing::delete(remove_domain_policy),
+        )
 }
 
 // --- Build org config from structured input ---
 
-fn build_org_config(input: &CreateOrganizationStructured) -> Result<Value, String> {
+fn build_org_config(input: &CreateOrganization) -> Result<Value, String> {
     tracing::debug!(org_id = %input.id, "Building org config from structured input");
-
-    let max_retries = input.upstream_max_retries.unwrap_or(3);
-    let cookie_name = input.cookie_name.clone().unwrap_or_else(|| "session_token".to_string());
-    let redirect_url = input.redirect_url.clone().unwrap_or_default();
-    let idp_url = input.idp_url.clone().unwrap_or_default();
 
     // JWT keys
     let (jwt_public_key, _jwt_private_key) = if input.auto_generate_jwt_keys {
@@ -56,51 +52,68 @@ fn build_org_config(input: &CreateOrganizationStructured) -> Result<Value, Strin
         (pk, String::new())
     };
 
-    // TLS configs
-    tracing::debug!(org_id = %input.id, tls_count = input.tls_configs.len(), "Processing TLS configs");
-    let mut tls = HashMap::new();
-    for tls_input in &input.tls_configs {
-        let (cert, key) = if tls_input.auto_generate {
-            tracing::debug!(org_id = %input.id, domain = %tls_input.domain,
+    let cookie_name = input.cookie_name.clone().unwrap_or_else(|| "session_token".to_string());
+    let redirect_url = input.redirect_url.clone().unwrap_or_default();
+    let idp_url = input.idp_url.clone().unwrap_or_default();
+
+    // Build per-domain configs
+    let mut domains = HashMap::new();
+    for (domain_name, domain_input) in &input.domains {
+        tracing::debug!(org_id = %input.id, domain = %domain_name, "Processing domain config");
+
+        // TLS
+        let (cert, key) = if domain_input.auto_generate_tls {
+            tracing::debug!(org_id = %input.id, domain = %domain_name,
                 "Auto-generating TLS certificate");
-            let cert = generate::generate_tls_cert(&tls_input.domain).map_err(|e| {
-                tracing::error!(org_id = %input.id, domain = %tls_input.domain, error = %e,
+            let cert = generate::generate_tls_cert(domain_name).map_err(|e| {
+                tracing::error!(org_id = %input.id, domain = %domain_name, error = %e,
                     "Failed to generate TLS certificate");
                 e.to_string()
             })?;
-            tracing::debug!(org_id = %input.id, domain = %tls_input.domain,
+            tracing::debug!(org_id = %input.id, domain = %domain_name,
                 "TLS certificate generated successfully");
             (cert.cert_pem, cert.key_pem)
         } else {
-            tracing::debug!(org_id = %input.id, domain = %tls_input.domain,
+            tracing::debug!(org_id = %input.id, domain = %domain_name,
                 "Using provided TLS certificate and key");
-            let c = tls_input.cert_pem.clone().unwrap_or_default();
-            let k = tls_input.key_pem.clone().unwrap_or_default();
-            (c, k)
+            (
+                domain_input.cert_pem.clone().unwrap_or_default(),
+                domain_input.key_pem.clone().unwrap_or_default(),
+            )
         };
-        tls.insert(
-            tls_input.domain.clone(),
+
+        // Policies
+        let policies: Vec<Value> = domain_input
+            .policies
+            .iter()
+            .map(|p| build_policy_value(p))
+            .collect();
+
+        let max_retries = domain_input.upstream_max_retries.unwrap_or(3);
+
+        domains.insert(
+            domain_name.clone(),
             json!({
-                "cert_pem": cert,
-                "key_pem": key
+                "upstream": {
+                    "base_url": domain_input.upstream_base_url,
+                    "timeout_ms": domain_input.upstream_timeout_ms,
+                    "max_retries": max_retries
+                },
+                "tls": {
+                    "cert_pem": cert,
+                    "key_pem": key
+                },
+                "policies": policies
             }),
         );
     }
 
-    tracing::debug!(org_id = %input.id, domains = ?input.domains, upstream = %input.upstream_base_url,
+    tracing::debug!(org_id = %input.id, domain_count = domains.len(),
         jwt_issuer = %input.jwt_issuer, "Building final org config JSON");
 
     let config = json!({
         "id": input.id,
         "name": input.name,
-        "domains": input.domains,
-        "policies": [],
-        "domain_policies": {},
-        "upstream": {
-            "base_url": input.upstream_base_url,
-            "timeout_ms": input.upstream_timeout_ms,
-            "max_retries": max_retries
-        },
         "auth": {
             "jwt_issuer": input.jwt_issuer,
             "jwt_audience": input.jwt_audience,
@@ -109,7 +122,7 @@ fn build_org_config(input: &CreateOrganizationStructured) -> Result<Value, Strin
             "redirect_url": redirect_url,
             "idp_url": idp_url
         },
-        "tls": tls
+        "domains": domains
     });
 
     tracing::debug!(org_id = %input.id, config_size = config.to_string().len(),
@@ -118,27 +131,70 @@ fn build_org_config(input: &CreateOrganizationStructured) -> Result<Value, Strin
 }
 
 fn build_update_config(
-    input: &UpdateOrganizationStructured,
+    input: &UpdateOrganization,
     existing_config: &Value,
 ) -> Result<Value, String> {
     let mut config = existing_config.clone();
     let config_obj = config.as_object_mut().ok_or("Config is not a JSON object")?;
 
-    // Update domains
+    // Update domains (merge per-domain)
     if let Some(domains) = &input.domains {
-        config_obj.insert("domains".to_string(), json!(domains));
-    }
+        let existing_domains = config_obj
+            .entry("domains".to_string())
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or("domains is not a JSON object")?;
 
-    // Update upstream fields
-    if let Some(upstream) = config_obj.get_mut("upstream") {
-        if let Some(base_url) = &input.upstream_base_url {
-            upstream["base_url"] = json!(base_url);
-        }
-        if let Some(timeout) = &input.upstream_timeout_ms {
-            upstream["timeout_ms"] = json!(timeout);
-        }
-        if let Some(retries) = &input.upstream_max_retries {
-            upstream["max_retries"] = json!(retries);
+        for (domain_name, domain_input) in domains {
+            tracing::debug!(domain = %domain_name, "Merging domain update");
+
+            let domain_config = existing_domains
+                .entry(domain_name.clone())
+                .or_insert_with(|| json!({}));
+
+            // Update upstream
+            if let Some(upstream) = domain_config.get_mut("upstream").and_then(|v| v.as_object_mut()) {
+                upstream.insert("base_url".to_string(), json!(domain_input.upstream_base_url));
+                upstream.insert("timeout_ms".to_string(), json!(domain_input.upstream_timeout_ms));
+                if let Some(retries) = domain_input.upstream_max_retries {
+                    upstream.insert("max_retries".to_string(), json!(retries));
+                }
+            } else {
+                let max_retries = domain_input.upstream_max_retries.unwrap_or(3);
+                domain_config["upstream"] = json!({
+                    "base_url": domain_input.upstream_base_url,
+                    "timeout_ms": domain_input.upstream_timeout_ms,
+                    "max_retries": max_retries
+                });
+            }
+
+            // Update TLS
+            if domain_input.auto_generate_tls {
+                let cert = generate::generate_tls_cert(domain_name).map_err(|e| {
+                    tracing::error!(domain = %domain_name, error = %e,
+                        "Failed to generate TLS certificate");
+                    e.to_string()
+                })?;
+                domain_config["tls"] = json!({
+                    "cert_pem": cert.cert_pem,
+                    "key_pem": cert.key_pem
+                });
+            } else if let (Some(cert), Some(key)) = (&domain_input.cert_pem, &domain_input.key_pem) {
+                domain_config["tls"] = json!({
+                    "cert_pem": cert,
+                    "key_pem": key
+                });
+            }
+
+            // Update policies
+            if !domain_input.policies.is_empty() {
+                let policies: Vec<Value> = domain_input
+                    .policies
+                    .iter()
+                    .map(|p| build_policy_value(p))
+                    .collect();
+                domain_config["policies"] = json!(policies);
+            }
         }
     }
 
@@ -173,41 +229,12 @@ fn build_update_config(
                 if let Some(pub_key) = &input.jwt_public_key {
                     auth["jwt_public_key"] = json!(pub_key);
                 }
-                // If no key provided and auto_generate=false, keep existing
             }
             None => {
                 if let Some(pub_key) = &input.jwt_public_key {
                     auth["jwt_public_key"] = json!(pub_key);
                 }
             }
-        }
-    }
-
-    // Update TLS configs
-    if let Some(tls_inputs) = &input.tls_configs {
-        let tls = config_obj
-            .entry("tls".to_string())
-            .or_insert_with(|| json!({}));
-        let tls_obj = tls.as_object_mut().ok_or("TLS config is not a JSON object")?;
-
-        for tls_input in tls_inputs {
-            if tls_input.auto_generate {
-                let cert = generate::generate_tls_cert(&tls_input.domain).map_err(|e| {
-                    tracing::error!(domain = %tls_input.domain, error = %e,
-                        "Failed to generate TLS certificate");
-                    e.to_string()
-                })?;
-                tls_obj.insert(tls_input.domain.clone(), json!({
-                    "cert_pem": cert.cert_pem,
-                    "key_pem": cert.key_pem
-                }));
-            } else if let (Some(cert), Some(key)) = (&tls_input.cert_pem, &tls_input.key_pem) {
-                tls_obj.insert(tls_input.domain.clone(), json!({
-                    "cert_pem": cert,
-                    "key_pem": key
-                }));
-            }
-            // If auto_generate=false and no cert/key, preserve existing
         }
     }
 
@@ -334,10 +361,10 @@ async fn get_org(
 async fn create_org(
     State((pool, config)): State<(DbPool, Config)>,
     auth_user: axum::extract::Extension<AuthUser>,
-    Json(input): Json<CreateOrganizationStructured>,
+    Json(input): Json<CreateOrganization>,
 ) -> Result<Json<Value>, StatusCode> {
     tracing::debug!(org_id = %input.id, name = %input.name, user_id = %auth_user.id,
-        domains = ?input.domains, "POST /api/organizations");
+        domain_count = input.domains.len(), "POST /api/organizations");
 
     tracing::debug!(org_id = %input.id, "Checking if org ID already exists");
     let existing = sqlx::query_scalar::<_, bool>(
@@ -398,7 +425,7 @@ async fn update_org(
     State((pool, config)): State<(DbPool, Config)>,
     Path(org_id): Path<String>,
     auth_user: axum::extract::Extension<AuthUser>,
-    Json(input): Json<UpdateOrganizationStructured>,
+    Json(input): Json<UpdateOrganization>,
 ) -> Result<Json<Value>, StatusCode> {
     tracing::debug!(org_id = %org_id, user_id = %auth_user.id, "PUT /api/organizations/{}", org_id);
 
@@ -498,159 +525,14 @@ async fn delete_org(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn add_policy(
+async fn add_domain_policy(
     State((pool, config)): State<(DbPool, Config)>,
-    Path(org_id): Path<String>,
+    Path((org_id, domain)): Path<(String, String)>,
     auth_user: axum::extract::Extension<AuthUser>,
     Json(input): Json<AddPolicy>,
 ) -> Result<Json<Value>, StatusCode> {
-    tracing::debug!(org_id = %org_id, policy_id = %input.policy_id, policy_name = %input.name,
-        user_id = %auth_user.id, "POST /api/organizations/{}/policies", org_id);
-
-    let org = sqlx::query_as::<_, Organization>(
-        "SELECT * FROM organizations WHERE id = $1 AND owner_id = $2",
-    )
-    .bind(&org_id)
-    .bind(auth_user.id)
-    .fetch_optional(&pool)
-    .await
-    .map_err(|e| {
-        tracing::error!(org_id = %org_id, error = %e, "DB error fetching org for policy add");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    let mut org = match org {
-        Some(o) => o,
-        None => {
-            tracing::debug!(org_id = %org_id, "Add policy failed: org not found");
-            return Err(StatusCode::NOT_FOUND);
-        }
-    };
-
-    let policy = build_policy_value(&input);
-    let config_obj = org.config.as_object_mut().ok_or_else(|| {
-        tracing::error!(org_id = %org_id, "Config is not a JSON object");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    let policies = config_obj
-        .entry("policies")
-        .or_insert_with(|| json!([]))
-        .as_array_mut()
-        .ok_or_else(|| {
-            tracing::error!(org_id = %org_id, "Policies field is not an array");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-    tracing::debug!(org_id = %org_id, policy_id = %input.policy_id, current_count = policies.len(),
-        "Appending policy to org config");
-    policies.push(policy);
-
-    tracing::debug!(org_id = %org_id, "Saving updated config to DB");
-    let updated = sqlx::query_as::<_, Organization>(
-        "UPDATE organizations SET config = $1, updated_at = NOW() WHERE id = $2 RETURNING *",
-    )
-    .bind(&org.config)
-    .bind(&org_id)
-    .fetch_one(&pool)
-    .await
-    .map_err(|e| {
-        tracing::error!(org_id = %org_id, error = %e, "DB error saving policy");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    tracing::debug!(org_id = %org_id, "Syncing org to Redis after policy add");
-    if let Err(e) = redis_sync::sync_org_to_redis(&config, &updated).await {
-        tracing::error!(org_id = %org_id, error = %e, "Failed to sync org to Redis");
-    } else {
-        tracing::debug!(org_id = %org_id, "Org synced to Redis after policy add");
-    }
-
-    tracing::debug!(org_id = %org_id, policy_id = %input.policy_id, "Policy added successfully");
-    Ok(Json(json!({
-        "id": updated.id,
-        "config": updated.config
-    })))
-}
-
-async fn remove_policy(
-    State((pool, config)): State<(DbPool, Config)>,
-    Path((org_id, policy_id)): Path<(String, String)>,
-    auth_user: axum::extract::Extension<AuthUser>,
-) -> Result<Json<Value>, StatusCode> {
-    tracing::debug!(org_id = %org_id, policy_id = %policy_id, user_id = %auth_user.id,
-        "DELETE /api/organizations/{}/policies/{}", org_id, policy_id);
-
-    let org = sqlx::query_as::<_, Organization>(
-        "SELECT * FROM organizations WHERE id = $1 AND owner_id = $2",
-    )
-    .bind(&org_id)
-    .bind(auth_user.id)
-    .fetch_optional(&pool)
-    .await
-    .map_err(|e| {
-        tracing::error!(org_id = %org_id, error = %e, "DB error fetching org for policy remove");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    let mut org = match org {
-        Some(o) => o,
-        None => {
-            tracing::debug!(org_id = %org_id, "Remove policy failed: org not found");
-            return Err(StatusCode::NOT_FOUND);
-        }
-    };
-
-    let config_obj = org.config.as_object_mut().ok_or_else(|| {
-        tracing::error!(org_id = %org_id, "Config is not a JSON object");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    if let Some(policies) = config_obj.get_mut("policies").and_then(|v| v.as_array_mut()) {
-        let before = policies.len();
-        policies.retain(|p| {
-            p.get("id").and_then(|v| v.as_str()) != Some(&policy_id)
-        });
-        tracing::debug!(org_id = %org_id, policy_id = %policy_id,
-            before = before, after = policies.len(),
-            "Policy removed from config");
-    } else {
-        tracing::debug!(org_id = %org_id, "No policies array found in config");
-    }
-
-    tracing::debug!(org_id = %org_id, "Saving updated config to DB");
-    let updated = sqlx::query_as::<_, Organization>(
-        "UPDATE organizations SET config = $1, updated_at = NOW() WHERE id = $2 RETURNING *",
-    )
-    .bind(&org.config)
-    .bind(&org_id)
-    .fetch_one(&pool)
-    .await
-    .map_err(|e| {
-        tracing::error!(org_id = %org_id, error = %e, "DB error saving policy removal");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    tracing::debug!(org_id = %org_id, "Syncing org to Redis after policy remove");
-    if let Err(e) = redis_sync::sync_org_to_redis(&config, &updated).await {
-        tracing::error!(org_id = %org_id, error = %e, "Failed to sync org to Redis");
-    } else {
-        tracing::debug!(org_id = %org_id, "Org synced to Redis after policy remove");
-    }
-
-    tracing::debug!(org_id = %org_id, policy_id = %policy_id, "Policy removed successfully");
-    Ok(Json(json!({
-        "id": updated.id,
-        "config": updated.config
-    })))
-}
-
-async fn add_domain_policy(
-    State((pool, config)): State<(DbPool, Config)>,
-    Path(org_id): Path<String>,
-    auth_user: axum::extract::Extension<AuthUser>,
-    Json(input): Json<AddDomainPolicy>,
-) -> Result<Json<Value>, StatusCode> {
-    tracing::debug!(org_id = %org_id, domain = %input.domain, policy_id = %input.policy_id,
-        user_id = %auth_user.id, "POST /api/organizations/{}/domain-policies", org_id);
+    tracing::debug!(org_id = %org_id, domain = %domain, policy_id = %input.policy_id,
+        user_id = %auth_user.id, "POST /api/organizations/{}/domains/{}/policies", org_id, domain);
 
     let org = sqlx::query_as::<_, Organization>(
         "SELECT * FROM organizations WHERE id = $1 AND owner_id = $2",
@@ -672,43 +554,40 @@ async fn add_domain_policy(
         }
     };
 
-    let domain_name = input.domain.clone();
-    let policy_id = input.policy_id.clone();
-    let policy_input = AddPolicy {
-        policy_id: input.policy_id,
-        name: input.name,
-        effect: input.effect,
-        rules: input.rules,
-    };
-    let policy = build_policy_value(&policy_input);
-
+    let policy = build_policy_value(&input);
     let config_obj = org.config.as_object_mut().ok_or_else(|| {
         tracing::error!(org_id = %org_id, "Config is not a JSON object");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-    let domain_policies = config_obj
-        .entry("domain_policies")
-        .or_insert_with(|| json!({}))
-        .as_object_mut()
+
+    let domain_config = config_obj
+        .get_mut("domains")
+        .and_then(|d| d.as_object_mut())
+        .and_then(|d| d.get_mut(&domain))
         .ok_or_else(|| {
-            tracing::error!(org_id = %org_id, "domain_policies is not a JSON object");
-            StatusCode::INTERNAL_SERVER_ERROR
+            tracing::debug!(org_id = %org_id, domain = %domain, "Domain not found in config");
+            StatusCode::NOT_FOUND
         })?;
 
-    let domain_arr = domain_policies
-        .entry(domain_name.clone())
+    let domain_obj = domain_config.as_object_mut().ok_or_else(|| {
+        tracing::error!(org_id = %org_id, domain = %domain,
+            "Domain config is not a JSON object");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    let policies = domain_obj
+        .entry("policies".to_string())
         .or_insert_with(|| json!([]))
         .as_array_mut()
         .ok_or_else(|| {
-            tracing::error!(org_id = %org_id, domain = %domain_name,
-                "Domain policies entry is not an array");
+            tracing::error!(org_id = %org_id, domain = %domain,
+                "Policies field is not an array");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    tracing::debug!(org_id = %org_id, domain = %domain_name, policy_id = %policy_id,
-        current_count = domain_arr.len(),
-        "Appending domain policy to config");
-    domain_arr.push(policy);
+    tracing::debug!(org_id = %org_id, domain = %domain, policy_id = %input.policy_id,
+        current_count = policies.len(),
+        "Appending policy to domain config");
+    policies.push(policy);
 
     tracing::debug!(org_id = %org_id, "Saving updated config to DB");
     let updated = sqlx::query_as::<_, Organization>(
@@ -730,7 +609,7 @@ async fn add_domain_policy(
         tracing::debug!(org_id = %org_id, "Org synced to Redis after domain policy add");
     }
 
-    tracing::debug!(org_id = %org_id, domain = %domain_name, policy_id = %policy_id,
+    tracing::debug!(org_id = %org_id, domain = %domain, policy_id = %input.policy_id,
         "Domain policy added successfully");
     Ok(Json(json!({
         "id": updated.id,
@@ -745,7 +624,7 @@ async fn remove_domain_policy(
 ) -> Result<Json<Value>, StatusCode> {
     tracing::debug!(org_id = %org_id, domain = %domain, policy_id = %policy_id,
         user_id = %auth_user.id,
-        "DELETE /api/organizations/{}/domain-policies/{}/{}", org_id, domain, policy_id);
+        "DELETE /api/organizations/{}/domains/{}/policies/{}", org_id, domain, policy_id);
 
     let org = sqlx::query_as::<_, Organization>(
         "SELECT * FROM organizations WHERE id = $1 AND owner_id = $2",
@@ -772,25 +651,26 @@ async fn remove_domain_policy(
         tracing::error!(org_id = %org_id, "Config is not a JSON object");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-    if let Some(domain_policies) = config_obj
-        .get_mut("domain_policies")
-        .and_then(|v| v.as_object_mut())
-    {
-        if let Some(policies) = domain_policies.get_mut(&domain).and_then(|v| v.as_array_mut()) {
-            let before = policies.len();
-            policies.retain(|p| {
-                p.get("id").and_then(|v| v.as_str()) != Some(&policy_id)
-            });
-            tracing::debug!(org_id = %org_id, domain = %domain, policy_id = %policy_id,
-                before = before, after = policies.len(),
-                "Domain policy removed from config");
-        } else {
+
+    let domain_policies = config_obj
+        .get_mut("domains")
+        .and_then(|d| d.as_object_mut())
+        .and_then(|d| d.get_mut(&domain))
+        .and_then(|d| d.get_mut("policies"))
+        .and_then(|p| p.as_array_mut())
+        .ok_or_else(|| {
             tracing::debug!(org_id = %org_id, domain = %domain,
                 "No policies found for domain");
-        }
-    } else {
-        tracing::debug!(org_id = %org_id, "No domain_policies found in config");
-    }
+            StatusCode::NOT_FOUND
+        })?;
+
+    let before = domain_policies.len();
+    domain_policies.retain(|p| {
+        p.get("id").and_then(|v| v.as_str()) != Some(&policy_id)
+    });
+    tracing::debug!(org_id = %org_id, domain = %domain, policy_id = %policy_id,
+        before = before, after = domain_policies.len(),
+        "Policy removed from domain config");
 
     tracing::debug!(org_id = %org_id, "Saving updated config to DB");
     let updated = sqlx::query_as::<_, Organization>(

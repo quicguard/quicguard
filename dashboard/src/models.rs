@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -36,18 +38,28 @@ pub struct LoginUser {
     pub password: String,
 }
 
-// --- Structured org creation ---
+// --- Per-domain input ---
 
 #[derive(Debug, Deserialize)]
-pub struct CreateOrganizationStructured {
-    pub id: String,
-    pub name: String,
-    pub domains: Vec<String>,
-    // Upstream
+pub struct DomainInput {
     pub upstream_base_url: String,
     pub upstream_timeout_ms: u64,
     pub upstream_max_retries: Option<u32>,
-    // Auth
+    pub cert_pem: Option<String>,
+    pub key_pem: Option<String>,
+    pub auto_generate_tls: bool,
+    #[serde(default)]
+    pub policies: Vec<AddPolicy>,
+}
+
+// --- Structured org creation ---
+
+#[derive(Debug, Deserialize)]
+pub struct CreateOrganization {
+    pub id: String,
+    pub name: String,
+    pub domains: HashMap<String, DomainInput>,
+    // Auth (shared across all domains)
     pub jwt_issuer: String,
     pub jwt_audience: String,
     pub jwt_public_key: Option<String>,
@@ -55,25 +67,13 @@ pub struct CreateOrganizationStructured {
     pub cookie_name: Option<String>,
     pub redirect_url: Option<String>,
     pub idp_url: Option<String>,
-    // TLS
-    pub tls_configs: Vec<TlsInput>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct TlsInput {
-    pub domain: String,
-    pub cert_pem: Option<String>,
-    pub key_pem: Option<String>,
-    pub auto_generate: bool,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct UpdateOrganizationStructured {
+pub struct UpdateOrganization {
     pub name: Option<String>,
-    pub domains: Option<Vec<String>>,
-    pub upstream_base_url: Option<String>,
-    pub upstream_timeout_ms: Option<u64>,
-    pub upstream_max_retries: Option<u32>,
+    pub domains: Option<HashMap<String, DomainInput>>,
+    // Auth fields
     pub jwt_issuer: Option<String>,
     pub jwt_audience: Option<String>,
     pub jwt_public_key: Option<String>,
@@ -81,7 +81,6 @@ pub struct UpdateOrganizationStructured {
     pub cookie_name: Option<String>,
     pub redirect_url: Option<String>,
     pub idp_url: Option<String>,
-    pub tls_configs: Option<Vec<TlsInput>>,
 }
 
 // --- Policy management ---
@@ -107,13 +106,4 @@ pub struct ConditionInput {
     pub claim: String,
     pub operator: String,
     pub value: String,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct AddDomainPolicy {
-    pub domain: String,
-    pub policy_id: String,
-    pub name: String,
-    pub effect: Option<String>,
-    pub rules: Vec<PolicyRuleInput>,
 }

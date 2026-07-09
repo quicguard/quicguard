@@ -19,14 +19,18 @@ fn test_org() -> Organization {
     Organization {
         id: "org1".to_string(),
         name: "Test Org".to_string(),
-        domains: vec!["app.example.com".to_string()],
-        policies: vec![],
-        domain_policies: HashMap::new(),
-        upstream: UpstreamConfig {
-            base_url: "https://api.example.com".to_string(),
-            timeout_ms: 5000,
-            max_retries: 3,
-        },
+        domains: HashMap::from([(
+            "app.example.com".to_string(),
+            DomainConfig {
+                upstream: UpstreamConfig {
+                    base_url: "https://api.example.com".to_string(),
+                    timeout_ms: 5000,
+                    max_retries: 3,
+                },
+                tls: TlsConfig::default(),
+                policies: vec![],
+            },
+        )]),
         auth: AuthConfig {
             jwt_issuer: "https://auth.example.com".to_string(),
             jwt_audience: "proxy".to_string(),
@@ -36,7 +40,6 @@ fn test_org() -> Organization {
             redirect_url: "https://auth.example.com/login".to_string(),
             idp_url: String::new(),
         },
-        tls: HashMap::new(),
     }
 }
 
@@ -52,7 +55,7 @@ fn test_evaluate_no_policies_allows_all() {
 #[test]
 fn test_evaluate_general_allow_policy() {
     let mut org = test_org();
-    org.policies = vec![Policy {
+    org.domains.get_mut("app.example.com").unwrap().policies = vec![Policy {
         id: "p1".to_string(),
         name: "Allow GET".to_string(),
         rules: vec![PolicyRule {
@@ -72,7 +75,7 @@ fn test_evaluate_general_allow_policy() {
 #[test]
 fn test_evaluate_general_deny_blocks_matching() {
     let mut org = test_org();
-    org.policies = vec![Policy {
+    org.domains.get_mut("app.example.com").unwrap().policies = vec![Policy {
         id: "p1".to_string(),
         name: "Deny DELETE".to_string(),
         rules: vec![PolicyRule {
@@ -92,84 +95,11 @@ fn test_evaluate_general_deny_blocks_matching() {
 #[test]
 fn test_evaluate_domain_specific_allow() {
     let mut org = test_org();
-    org.domain_policies.insert(
-        "app.example.com".to_string(),
-        vec![Policy {
-            id: "p1".to_string(),
-            name: "Allow GET on app domain".to_string(),
-            rules: vec![PolicyRule {
-                resource: ResourcePattern::Prefix("/api/".to_string()),
-                methods: HashSet::from([HttpMethod::Get]),
-                conditions: vec![],
-            }],
-            effect: PolicyEffect::Allow,
-        }],
-    );
-
-    let claims = test_claims("user1", "org1");
-
-    assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/api/users", &claims).is_ok());
-    assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Post, "/api/users", &claims).is_err());
-}
-
-#[test]
-fn test_evaluate_domain_deny_blocks_even_if_general_allows() {
-    let mut org = test_org();
-
-    org.domain_policies.insert(
-        "app.example.com".to_string(),
-        vec![Policy {
-            id: "p1".to_string(),
-            name: "Deny DELETE".to_string(),
-            rules: vec![PolicyRule {
-                resource: ResourcePattern::Prefix("/".to_string()),
-                methods: HashSet::from([HttpMethod::Delete]),
-                conditions: vec![],
-            }],
-            effect: PolicyEffect::Deny,
-        }],
-    );
-
-    org.policies = vec![Policy {
-        id: "p2".to_string(),
-        name: "Allow all".to_string(),
+    org.domains.get_mut("app.example.com").unwrap().policies = vec![Policy {
+        id: "p1".to_string(),
+        name: "Allow GET on app domain".to_string(),
         rules: vec![PolicyRule {
-            resource: ResourcePattern::Prefix("/".to_string()),
-            methods: HashSet::from([HttpMethod::Get, HttpMethod::Delete]),
-            conditions: vec![],
-        }],
-        effect: PolicyEffect::Allow,
-    }];
-
-    let claims = test_claims("user1", "org1");
-
-    assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Delete, "/api/users", &claims).is_err());
-    assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/api/users", &claims).is_err());
-}
-
-#[test]
-fn test_evaluate_domain_not_found_falls_to_general() {
-    let mut org = test_org();
-
-    org.domain_policies.insert(
-        "other.example.com".to_string(),
-        vec![Policy {
-            id: "p1".to_string(),
-            name: "Deny GET".to_string(),
-            rules: vec![PolicyRule {
-                resource: ResourcePattern::Prefix("/".to_string()),
-                methods: HashSet::from([HttpMethod::Get]),
-                conditions: vec![],
-            }],
-            effect: PolicyEffect::Deny,
-        }],
-    );
-
-    org.policies = vec![Policy {
-        id: "p2".to_string(),
-        name: "Allow GET".to_string(),
-        rules: vec![PolicyRule {
-            resource: ResourcePattern::Prefix("/".to_string()),
+            resource: ResourcePattern::Prefix("/api/".to_string()),
             methods: HashSet::from([HttpMethod::Get]),
             conditions: vec![],
         }],
@@ -179,64 +109,66 @@ fn test_evaluate_domain_not_found_falls_to_general() {
     let claims = test_claims("user1", "org1");
 
     assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/api/users", &claims).is_ok());
+    assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Post, "/api/users", &claims).is_err());
 }
 
 #[test]
-fn test_evaluate_domain_allow_no_general_allows() {
+fn test_evaluate_domain_deny_blocks_even_if_allow_also_present() {
     let mut org = test_org();
-
-    org.domain_policies.insert(
-        "app.example.com".to_string(),
-        vec![Policy {
+    org.domains.get_mut("app.example.com").unwrap().policies = vec![
+        Policy {
             id: "p1".to_string(),
-            name: "Allow GET".to_string(),
+            name: "Allow all".to_string(),
             rules: vec![PolicyRule {
                 resource: ResourcePattern::Prefix("/".to_string()),
-                methods: HashSet::from([HttpMethod::Get]),
+                methods: HashSet::from([HttpMethod::Get, HttpMethod::Delete]),
                 conditions: vec![],
             }],
             effect: PolicyEffect::Allow,
-        }],
-    );
-
-    org.policies = vec![Policy {
-        id: "p2".to_string(),
-        name: "Deny POST".to_string(),
-        rules: vec![PolicyRule {
-            resource: ResourcePattern::Prefix("/".to_string()),
-            methods: HashSet::from([HttpMethod::Post]),
-            conditions: vec![],
-        }],
-        effect: PolicyEffect::Deny,
-    }];
+        },
+        Policy {
+            id: "p2".to_string(),
+            name: "Deny DELETE".to_string(),
+            rules: vec![PolicyRule {
+                resource: ResourcePattern::Prefix("/".to_string()),
+                methods: HashSet::from([HttpMethod::Delete]),
+                conditions: vec![],
+            }],
+            effect: PolicyEffect::Deny,
+        },
+    ];
 
     let claims = test_claims("user1", "org1");
 
+    assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Delete, "/api/users", &claims).is_err());
     assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/api/users", &claims).is_ok());
-    assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Post, "/api/users", &claims).is_err());
+}
+
+#[test]
+fn test_evaluate_domain_not_found_returns_error() {
+    let org = test_org();
+    let claims = test_claims("user1", "org1");
+
+    assert!(evaluate_policies(&org, "unknown.example.com", &HttpMethod::Get, "/api/users", &claims).is_err());
 }
 
 #[test]
 fn test_evaluate_domain_policy_with_condition() {
     let mut org = test_org();
-
-    org.domain_policies.insert(
-        "app.example.com".to_string(),
-        vec![Policy {
-            id: "p1".to_string(),
-            name: "Allow specific sub on domain".to_string(),
-            rules: vec![PolicyRule {
-                resource: ResourcePattern::Prefix("/".to_string()),
-                methods: HashSet::from([HttpMethod::Get]),
-                conditions: vec![Condition {
-                    claim: "sub".to_string(),
-                    operator: ConditionOperator::StartsWith,
-                    value: "admin-".to_string(),
-                }],
+    org.domains.get_mut("app.example.com").unwrap().policies = vec![Policy {
+        id: "p1".to_string(),
+        name: "Allow specific sub on domain".to_string(),
+        rules: vec![PolicyRule {
+            resource: ResourcePattern::Prefix("/".to_string()),
+            methods: HashSet::from([HttpMethod::Get]),
+            conditions: vec![Condition {
+                claim: "sub".to_string(),
+                operator: ConditionOperator::StartsWith,
+                value: "admin-".to_string(),
             }],
-            effect: PolicyEffect::Allow,
         }],
-    );
+        effect: PolicyEffect::Allow,
+    }];
 
     let claims = test_claims("admin-user", "org1");
     assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/api/users", &claims).is_ok());
@@ -246,20 +178,9 @@ fn test_evaluate_domain_policy_with_condition() {
 }
 
 #[test]
-fn test_evaluate_empty_domain_policies_no_effect() {
+fn test_evaluate_empty_domain_policies_allows_all() {
     let mut org = test_org();
-    org.domain_policies.insert("app.example.com".to_string(), vec![]);
-
-    org.policies = vec![Policy {
-        id: "p1".to_string(),
-        name: "Allow GET".to_string(),
-        rules: vec![PolicyRule {
-            resource: ResourcePattern::Prefix("/".to_string()),
-            methods: HashSet::from([HttpMethod::Get]),
-            conditions: vec![],
-        }],
-        effect: PolicyEffect::Allow,
-    }];
+    org.domains.get_mut("app.example.com").unwrap().policies = vec![];
 
     let claims = test_claims("user1", "org1");
 
@@ -269,8 +190,33 @@ fn test_evaluate_empty_domain_policies_no_effect() {
 #[test]
 fn test_evaluate_complex_real_world_scenario() {
     let mut org = test_org();
+    org.domains.insert(
+        "internal.example.com".to_string(),
+        DomainConfig {
+            upstream: UpstreamConfig {
+                base_url: "https://api.example.com".to_string(),
+                timeout_ms: 5000,
+                max_retries: 3,
+            },
+            tls: TlsConfig::default(),
+            policies: vec![Policy {
+                id: "internal-allow-admin".to_string(),
+                name: "Allow admin on internal domain".to_string(),
+                rules: vec![PolicyRule {
+                    resource: ResourcePattern::Prefix("/api/admin/".to_string()),
+                    methods: HashSet::from([HttpMethod::Get, HttpMethod::Post]),
+                    conditions: vec![Condition {
+                        claim: "org_id".to_string(),
+                        operator: ConditionOperator::Equals,
+                        value: "org1".to_string(),
+                    }],
+                }],
+                effect: PolicyEffect::Allow,
+            }],
+        },
+    );
 
-    org.policies = vec![
+    org.domains.get_mut("app.example.com").unwrap().policies = vec![
         Policy {
             id: "general-allow-read".to_string(),
             name: "Allow reading public resources".to_string(),
@@ -292,24 +238,6 @@ fn test_evaluate_complex_real_world_scenario() {
             effect: PolicyEffect::Deny,
         },
     ];
-
-    org.domain_policies.insert(
-        "internal.example.com".to_string(),
-        vec![Policy {
-            id: "internal-allow-admin".to_string(),
-            name: "Allow admin on internal domain".to_string(),
-            rules: vec![PolicyRule {
-                resource: ResourcePattern::Prefix("/api/admin/".to_string()),
-                methods: HashSet::from([HttpMethod::Get, HttpMethod::Post]),
-                conditions: vec![Condition {
-                    claim: "org_id".to_string(),
-                    operator: ConditionOperator::Equals,
-                    value: "org1".to_string(),
-                }],
-            }],
-            effect: PolicyEffect::Allow,
-        }],
-    );
 
     let claims = test_claims("user1", "org1");
 

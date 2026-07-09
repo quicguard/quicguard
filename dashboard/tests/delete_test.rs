@@ -27,15 +27,16 @@ async fn test_create_then_delete_org() {
                 .body(Body::from(serde_json::to_string(&serde_json::json!({
                     "id": "test-delete-org",
                     "name": "Test Delete Org",
-                    "domains": ["app.example.com"],
-                    "upstream_base_url": "http://localhost:8080",
-                    "upstream_timeout_ms": 5000,
+                    "domains": {
+                        "app.example.com": {
+                            "upstream_base_url": "http://localhost:8080",
+                            "upstream_timeout_ms": 5000,
+                            "auto_generate_tls": true
+                        }
+                    },
                     "jwt_issuer": "https://auth.example.com",
                     "jwt_audience": "quicguard",
-                    "auto_generate_jwt_keys": true,
-                    "tls_configs": [
-                        {"domain": "app.example.com", "auto_generate": true}
-                    ]
+                    "auto_generate_jwt_keys": true
                 })).unwrap()))
                 .unwrap(),
         )
@@ -166,13 +167,16 @@ async fn test_create_then_delete_numeric_id() {
                 .body(Body::from(serde_json::to_string(&serde_json::json!({
                     "id": "1",
                     "name": "Org One",
-                    "domains": ["one.example.com"],
-                    "upstream_base_url": "http://localhost:8080",
-                    "upstream_timeout_ms": 5000,
+                    "domains": {
+                        "one.example.com": {
+                            "upstream_base_url": "http://localhost:8080",
+                            "upstream_timeout_ms": 5000,
+                            "auto_generate_tls": true
+                        }
+                    },
                     "jwt_issuer": "https://auth.example.com",
                     "jwt_audience": "quicguard",
-                    "auto_generate_jwt_keys": true,
-                    "tls_configs": [{"domain": "one.example.com", "auto_generate": true}]
+                    "auto_generate_jwt_keys": true
                 })).unwrap()))
                 .unwrap(),
         )

@@ -35,12 +35,20 @@ fn test_org(id: &str, domains: Vec<&str>) -> Organization {
     Organization {
         id: id.to_string(),
         name: format!("Org {}", id),
-        domains: domains.into_iter().map(String::from).collect(),
-        policies: vec![],
-        domain_policies: HashMap::new(),
-        upstream: default_upstream(),
+        domains: domains
+            .into_iter()
+            .map(|d| {
+                (
+                    d.to_string(),
+                    DomainConfig {
+                        upstream: default_upstream(),
+                        tls: TlsConfig::default(),
+                        policies: vec![],
+                    },
+                )
+            })
+            .collect(),
         auth: default_auth(),
-        tls: HashMap::new(),
     }
 }
 
@@ -124,12 +132,15 @@ async fn test_proxy_state_reload_updates_existing() {
     let updated_org = Organization {
         id: "org1".to_string(),
         name: "Updated Org".to_string(),
-        domains: vec!["new.example.com".to_string()],
-        policies: vec![],
-        domain_policies: HashMap::new(),
-        upstream: default_upstream(),
+        domains: HashMap::from([(
+            "new.example.com".to_string(),
+            DomainConfig {
+                upstream: default_upstream(),
+                tls: TlsConfig::default(),
+                policies: vec![],
+            },
+        )]),
         auth: default_auth(),
-        tls: HashMap::new(),
     };
     state.reload_org("org1", updated_org).await;
 

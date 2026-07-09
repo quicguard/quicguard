@@ -102,7 +102,7 @@ impl ProxyState {
 
         let org_index: HashMap<String, String> = orgs
             .iter()
-            .flat_map(|(id, org)| org.domains.iter().map(move |d| (d.clone(), id.clone())))
+            .flat_map(|(id, org)| org.domains.keys().map(move |d| (d.clone(), id.clone())))
             .collect();
 
         Ok(Self {
@@ -124,21 +124,17 @@ impl ProxyState {
     }
 
     pub async fn reload_org(&self, org_id: &str, org: Organization) {
-        let old_domains = {
+        let old_domains: Vec<String> = {
             let config = self.config.read().await;
-            config.organizations.get(org_id).map(|o| o.domains.clone())
+            config.organizations.get(org_id).map(|o| o.domains.keys().cloned().collect()).unwrap_or_default()
         };
-
-        if let Some(domains) = old_domains {
-            let mut org_index = self.org_index.write().await;
-            for domain in &domains {
-                org_index.remove(domain);
-            }
-        }
 
         {
             let mut org_index = self.org_index.write().await;
-            for domain in &org.domains {
+            for domain in &old_domains {
+                org_index.remove(domain);
+            }
+            for domain in org.domains.keys() {
                 org_index.insert(domain.clone(), org_id.to_string());
             }
         }
@@ -152,7 +148,7 @@ impl ProxyState {
         let mut config = self.config.write().await;
         if let Some(org) = config.organizations.remove(org_id) {
             let mut org_index = self.org_index.write().await;
-            for domain in &org.domains {
+            for domain in org.domains.keys() {
                 org_index.remove(domain);
             }
         }
@@ -223,34 +219,12 @@ pub fn evaluate_policies(
     path: &str,
     claims: &TokenClaims,
 ) -> Result<(), ProxyError> {
-    if let Some(domain_policies) = org.domain_policies.get(domain) {
-        if !domain_policies.is_empty() {
-            let mut any_deny = false;
-            let mut any_allow = false;
-
-            for policy in domain_policies {
-                if policy.matches_request(method, path, claims) {
-                    match policy.effect {
-                        PolicyEffect::Deny => any_deny = true,
-                        PolicyEffect::Allow => any_allow = true,
-                    }
-                }
-            }
-
-            if any_deny {
-                return Err(ProxyError::AccessDenied);
-            }
-            if any_allow {
-                return Ok(());
-            }
-            return Err(ProxyError::AccessDenied);
-        }
-    }
+    let domain_config = org.domains.get(domain).ok_or(ProxyError::OrganizationNotFound)?;
 
     let mut any_deny = false;
     let mut any_allow = false;
 
-    for policy in &org.policies {
+    for policy in &domain_config.policies {
         if policy.matches_request(method, path, claims) {
             match policy.effect {
                 PolicyEffect::Deny => any_deny = true,
@@ -262,7 +236,7 @@ pub fn evaluate_policies(
     if any_deny {
         return Err(ProxyError::AccessDenied);
     }
-    if any_allow || org.policies.is_empty() {
+    if any_allow || domain_config.policies.is_empty() {
         Ok(())
     } else {
         Err(ProxyError::AccessDenied)

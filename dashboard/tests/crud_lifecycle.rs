@@ -20,16 +20,21 @@ async fn create_org(ctx: &TestContext, token: &str, id: &str, name: &str) -> ser
                 .body(Body::from(serde_json::to_string(&serde_json::json!({
                     "id": id,
                     "name": name,
-                    "domains": ["app.example.com", "api.example.com"],
-                    "upstream_base_url": "http://localhost:8080",
-                    "upstream_timeout_ms": 5000,
+                    "domains": {
+                        "app.example.com": {
+                            "upstream_base_url": "http://localhost:8080",
+                            "upstream_timeout_ms": 5000,
+                            "auto_generate_tls": true
+                        },
+                        "api.example.com": {
+                            "upstream_base_url": "http://localhost:8080",
+                            "upstream_timeout_ms": 5000,
+                            "auto_generate_tls": true
+                        }
+                    },
                     "jwt_issuer": "https://auth.example.com",
                     "jwt_audience": "quicguard",
-                    "auto_generate_jwt_keys": true,
-                    "tls_configs": [
-                        {"domain": "app.example.com", "auto_generate": true},
-                        {"domain": "api.example.com", "auto_generate": true}
-                    ]
+                    "auto_generate_jwt_keys": true
                 })).unwrap()))
                 .unwrap(),
         )
@@ -96,14 +101,14 @@ async fn delete_org(ctx: &TestContext, token: &str, id: &str) -> StatusCode {
     response.status()
 }
 
-/// Helper: add policy via API.
+/// Helper: add policy to domain via API.
 async fn add_policy(ctx: &TestContext, token: &str, org_id: &str, policy_id: &str, name: &str) -> serde_json::Value {
     let app = ctx.app();
     let response = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/organizations/{}/policies", org_id))
+                .uri(format!("/api/organizations/{}/domains/app.example.com/policies", org_id))
                 .header("authorization", format!("Bearer {}", token))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_string(&serde_json::json!({
@@ -126,14 +131,14 @@ async fn add_policy(ctx: &TestContext, token: &str, org_id: &str, policy_id: &st
     serde_json::from_slice(&bytes).unwrap()
 }
 
-/// Helper: remove policy via API.
+/// Helper: remove policy from domain via API.
 async fn remove_policy(ctx: &TestContext, token: &str, org_id: &str, policy_id: &str) -> serde_json::Value {
     let app = ctx.app();
     let response = app
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/api/organizations/{}/policies/{}", org_id, policy_id))
+                .uri(format!("/api/organizations/{}/domains/app.example.com/policies/{}", org_id, policy_id))
                 .header("authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -152,11 +157,10 @@ async fn add_domain_policy(ctx: &TestContext, token: &str, org_id: &str, domain:
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/organizations/{}/domain-policies", org_id))
+                .uri(format!("/api/organizations/{}/domains/{}/policies", org_id, domain))
                 .header("authorization", format!("Bearer {}", token))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_string(&serde_json::json!({
-                    "domain": domain,
                     "policy_id": policy_id,
                     "name": format!("Domain policy for {}", domain),
                     "effect": "Deny",
@@ -183,7 +187,7 @@ async fn remove_domain_policy(ctx: &TestContext, token: &str, org_id: &str, doma
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri(format!("/api/organizations/{}/domain-policies/{}/{}", org_id, domain, policy_id))
+                .uri(format!("/api/organizations/{}/domains/{}/policies/{}", org_id, domain, policy_id))
                 .header("authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -213,14 +217,14 @@ async fn test_full_org_lifecycle() {
     assert_eq!(created["name"], "Lifecycle Org");
 
     // Verify domains exist
-    let domains = created["config"]["domains"].as_array().unwrap();
-    assert!(domains.contains(&serde_json::json!("app.example.com")));
-    assert!(domains.contains(&serde_json::json!("api.example.com")));
+    let domains = created["config"]["domains"].as_object().unwrap();
+    assert!(domains.contains_key("app.example.com"));
+    assert!(domains.contains_key("api.example.com"));
 
     // Verify auto-generated keys
     assert!(!created["config"]["auth"]["jwt_public_key"].as_str().unwrap().is_empty());
-    assert!(!created["config"]["tls"]["app.example.com"]["cert_pem"].as_str().unwrap().is_empty());
-    assert!(!created["config"]["tls"]["api.example.com"]["cert_pem"].as_str().unwrap().is_empty());
+    assert!(!created["config"]["domains"]["app.example.com"]["tls"]["cert_pem"].as_str().unwrap().is_empty());
+    assert!(!created["config"]["domains"]["api.example.com"]["tls"]["cert_pem"].as_str().unwrap().is_empty());
 
     // 2. Get org
     println!("=== Step 2: Get org ===");
@@ -237,46 +241,46 @@ async fn test_full_org_lifecycle() {
     // 4. Add policies
     println!("=== Step 4: Add policies ===");
     let result = add_policy(&ctx, &token, "lifecycle-org", "pol-1", "Allow Read").await;
-    let policies = result["config"]["policies"].as_array().unwrap();
+    let policies = result["config"]["domains"]["app.example.com"]["policies"].as_array().unwrap();
     assert_eq!(policies.len(), 1);
     assert_eq!(policies[0]["id"], "pol-1");
 
     let result = add_policy(&ctx, &token, "lifecycle-org", "pol-2", "Allow Write").await;
-    let policies = result["config"]["policies"].as_array().unwrap();
+    let policies = result["config"]["domains"]["app.example.com"]["policies"].as_array().unwrap();
     assert_eq!(policies.len(), 2);
 
     // 5. Add domain policy
     println!("=== Step 5: Add domain policy ===");
     let result = add_domain_policy(&ctx, &token, "lifecycle-org", "app.example.com", "dpol-1").await;
-    let dp = result["config"]["domain_policies"]["app.example.com"].as_array().unwrap();
-    assert_eq!(dp.len(), 1);
-    assert_eq!(dp[0]["id"], "dpol-1");
-    assert_eq!(dp[0]["effect"], "Deny");
+    let dp = result["config"]["domains"]["app.example.com"]["policies"].as_array().unwrap();
+    assert_eq!(dp.len(), 3);
+    assert_eq!(dp[2]["id"], "dpol-1");
+    assert_eq!(dp[2]["effect"], "Deny");
 
     // 6. Verify full config via GET
     println!("=== Step 6: Verify full config ===");
     let org = get_org(&ctx, &token, "lifecycle-org").await;
-    assert_eq!(org["config"]["policies"].as_array().unwrap().len(), 2);
-    assert_eq!(org["config"]["domain_policies"]["app.example.com"].as_array().unwrap().len(), 1);
+    assert_eq!(org["config"]["domains"]["app.example.com"]["policies"].as_array().unwrap().len(), 3);
+    assert_eq!(org["config"]["domains"]["api.example.com"]["policies"].as_array().unwrap().len(), 0);
 
     // 7. Remove one policy
     println!("=== Step 7: Remove policy ===");
     let result = remove_policy(&ctx, &token, "lifecycle-org", "pol-1").await;
-    assert_eq!(result["config"]["policies"].as_array().unwrap().len(), 1);
+    assert_eq!(result["config"]["domains"]["app.example.com"]["policies"].as_array().unwrap().len(), 2);
 
     // 8. Remove domain policy
     println!("=== Step 8: Remove domain policy ===");
     let result = remove_domain_policy(&ctx, &token, "lifecycle-org", "app.example.com", "dpol-1").await;
     assert_eq!(
-        result["config"]["domain_policies"]["app.example.com"].as_array().unwrap().len(),
-        0
+        result["config"]["domains"]["app.example.com"]["policies"].as_array().unwrap().len(),
+        1
     );
 
     // 9. Verify only 1 policy remains
     println!("=== Step 9: Verify remaining ===");
     let org = get_org(&ctx, &token, "lifecycle-org").await;
-    assert_eq!(org["config"]["policies"].as_array().unwrap().len(), 1);
-    assert_eq!(org["config"]["policies"][0]["id"], "pol-2");
+    assert_eq!(org["config"]["domains"]["app.example.com"]["policies"].as_array().unwrap().len(), 1);
+    assert_eq!(org["config"]["domains"]["app.example.com"]["policies"][0]["id"], "pol-2");
 
     // 10. Delete org
     println!("=== Step 10: Delete org ===");
@@ -328,9 +332,9 @@ async fn test_multiple_orgs_independent() {
 
     // Verify each has exactly 1 policy
     let org_a = get_org(&ctx, &token, "org-a").await;
-    assert_eq!(org_a["config"]["policies"].as_array().unwrap().len(), 1);
+    assert_eq!(org_a["config"]["domains"]["app.example.com"]["policies"].as_array().unwrap().len(), 1);
     let org_b = get_org(&ctx, &token, "org-b").await;
-    assert_eq!(org_b["config"]["policies"].as_array().unwrap().len(), 1);
+    assert_eq!(org_b["config"]["domains"]["app.example.com"]["policies"].as_array().unwrap().len(), 1);
 
     // Delete org-b
     let status = delete_org(&ctx, &token, "org-b").await;
@@ -360,7 +364,7 @@ async fn test_policy_crud_detailed() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/organizations/pol-org/policies")
+                .uri("/api/organizations/pol-org/domains/app.example.com/policies")
                 .header("authorization", format!("Bearer {}", token))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_string(&serde_json::json!({
@@ -384,7 +388,7 @@ async fn test_policy_crud_detailed() {
     assert_eq!(response.status(), StatusCode::OK);
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let result: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    let policies = result["config"]["policies"].as_array().unwrap();
+    let policies = result["config"]["domains"]["app.example.com"]["policies"].as_array().unwrap();
     assert_eq!(policies.len(), 1);
     assert_eq!(policies[0]["effect"], "Deny");
     let conditions = policies[0]["rules"][0]["conditions"].as_array().unwrap();
@@ -392,12 +396,12 @@ async fn test_policy_crud_detailed() {
 
     // Add glob policy
     let result = add_policy(&ctx, &token, "pol-org", "glob-pol", "Glob Policy").await;
-    let policies = result["config"]["policies"].as_array().unwrap();
+    let policies = result["config"]["domains"]["app.example.com"]["policies"].as_array().unwrap();
     assert_eq!(policies.len(), 2);
 
     // Remove the conditional policy
     let result = remove_policy(&ctx, &token, "pol-org", "cond-pol").await;
-    let policies = result["config"]["policies"].as_array().unwrap();
+    let policies = result["config"]["domains"]["app.example.com"]["policies"].as_array().unwrap();
     assert_eq!(policies.len(), 1);
     assert_eq!(policies[0]["id"], "glob-pol");
 }
@@ -413,29 +417,29 @@ async fn test_domain_policy_multi_domain() {
 
     // Add domain policy to domain A
     let result = add_domain_policy(&ctx, &token, "dp-multi", "app.example.com", "dp-a1").await;
-    let dp = result["config"]["domain_policies"]["app.example.com"].as_array().unwrap();
+    let dp = result["config"]["domains"]["app.example.com"]["policies"].as_array().unwrap();
     assert_eq!(dp.len(), 1);
 
     // Add another domain policy to domain A
     let result = add_domain_policy(&ctx, &token, "dp-multi", "app.example.com", "dp-a2").await;
-    let dp = result["config"]["domain_policies"]["app.example.com"].as_array().unwrap();
+    let dp = result["config"]["domains"]["app.example.com"]["policies"].as_array().unwrap();
     assert_eq!(dp.len(), 2);
 
     // Add domain policy to domain B
     let result = add_domain_policy(&ctx, &token, "dp-multi", "api.example.com", "dp-b1").await;
-    let dp_b = result["config"]["domain_policies"]["api.example.com"].as_array().unwrap();
+    let dp_b = result["config"]["domains"]["api.example.com"]["policies"].as_array().unwrap();
     assert_eq!(dp_b.len(), 1);
     // Domain A should still have 2
-    let dp_a = result["config"]["domain_policies"]["app.example.com"].as_array().unwrap();
+    let dp_a = result["config"]["domains"]["app.example.com"]["policies"].as_array().unwrap();
     assert_eq!(dp_a.len(), 2);
 
     // Remove from domain A
     let result = remove_domain_policy(&ctx, &token, "dp-multi", "app.example.com", "dp-a1").await;
-    let dp_a = result["config"]["domain_policies"]["app.example.com"].as_array().unwrap();
+    let dp_a = result["config"]["domains"]["app.example.com"]["policies"].as_array().unwrap();
     assert_eq!(dp_a.len(), 1);
     assert_eq!(dp_a[0]["id"], "dp-a2");
     // Domain B unaffected
-    let dp_b = result["config"]["domain_policies"]["api.example.com"].as_array().unwrap();
+    let dp_b = result["config"]["domains"]["api.example.com"]["policies"].as_array().unwrap();
     assert_eq!(dp_b.len(), 1);
 }
 

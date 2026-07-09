@@ -42,16 +42,12 @@ export const api = {
     get: (id) => request(`/organizations/${id}`),
     create: (data) =>
       request('/organizations', { method: 'POST', body: JSON.stringify(data) }),
-    updateRaw: (id, data) =>
+    update: (id, data) =>
       request(`/organizations/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id) => request(`/organizations/${id}`, { method: 'DELETE' }),
-    addPolicy: (id, data) =>
-      request(`/organizations/${id}/policies`, { method: 'POST', body: JSON.stringify(data) }),
-    removePolicy: (id, policyId) =>
-      request(`/organizations/${id}/policies/${policyId}`, { method: 'DELETE' }),
-    addDomainPolicy: (id, data) =>
-      request(`/organizations/${id}/domain-policies`, { method: 'POST', body: JSON.stringify(data) }),
-    removeDomainPolicy: (id, domain, policyId) =>
-      request(`/organizations/${id}/domain-policies/${domain}/${policyId}`, { method: 'DELETE' }),
+    addDomainPolicy: (orgId, domain, data) =>
+      request(`/organizations/${orgId}/domains/${domain}/policies`, { method: 'POST', body: JSON.stringify(data) }),
+    removeDomainPolicy: (orgId, domain, policyId) =>
+      request(`/organizations/${orgId}/domains/${domain}/policies/${policyId}`, { method: 'DELETE' }),
   },
 };

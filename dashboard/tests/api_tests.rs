@@ -395,18 +395,16 @@ fn make_org_payload(id: &str, name: &str) -> serde_json::Value {
     serde_json::json!({
         "id": id,
         "name": name,
-        "domains": ["app.example.com"],
-        "upstream_base_url": "http://localhost:8080",
-        "upstream_timeout_ms": 5000,
+        "domains": {
+            "app.example.com": {
+                "upstream_base_url": "http://localhost:8080",
+                "upstream_timeout_ms": 5000,
+                "auto_generate_tls": true
+            }
+        },
         "jwt_issuer": "https://auth.example.com",
         "jwt_audience": "quicguard",
-        "auto_generate_jwt_keys": true,
-        "tls_configs": [
-            {
-                "domain": "app.example.com",
-                "auto_generate": true
-            }
-        ]
+        "auto_generate_jwt_keys": true
     })
 }
 
@@ -435,10 +433,10 @@ async fn test_create_org() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["id"], "org-1");
     assert_eq!(json["name"], "Test Org");
-    // Verify config has domains, auth, tls
-    assert!(json["config"]["domains"].as_array().unwrap().contains(&serde_json::json!("app.example.com")));
+    // Verify config has per-domain structure, auth, tls
+    assert!(json["config"]["domains"]["app.example.com"].is_object());
     assert!(!json["config"]["auth"]["jwt_public_key"].as_str().unwrap().is_empty());
-    assert!(!json["config"]["tls"]["app.example.com"]["cert_pem"].as_str().unwrap().is_empty());
+    assert!(!json["config"]["domains"]["app.example.com"]["tls"]["cert_pem"].as_str().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -701,13 +699,13 @@ async fn test_add_policy_to_org() {
         .await
         .unwrap();
 
-    // Add policy
+    // Add policy to domain
     let response = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/organizations/pol-org/policies")
+                .uri("/api/organizations/pol-org/domains/app.example.com/policies")
                 .header("authorization", format!("Bearer {}", token))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_string(&serde_json::json!({
@@ -729,7 +727,7 @@ async fn test_add_policy_to_org() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let policies = json["config"]["policies"].as_array().unwrap();
+    let policies = json["config"]["domains"]["app.example.com"]["policies"].as_array().unwrap();
     assert_eq!(policies.len(), 1);
     assert_eq!(policies[0]["id"], "allow-read");
     assert_eq!(policies[0]["name"], "Allow Read Access");
@@ -757,12 +755,12 @@ async fn test_remove_policy_from_org() {
         .await
         .unwrap();
 
-    // Add policy
+    // Add policy to domain
     app.clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/organizations/rmpol-org/policies")
+                .uri("/api/organizations/rmpol-org/domains/app.example.com/policies")
                 .header("authorization", format!("Bearer {}", token))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_string(&serde_json::json!({
@@ -781,7 +779,7 @@ async fn test_remove_policy_from_org() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri("/api/organizations/rmpol-org/policies/temp-policy")
+                .uri("/api/organizations/rmpol-org/domains/app.example.com/policies/temp-policy")
                 .header("authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -792,7 +790,7 @@ async fn test_remove_policy_from_org() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(json["config"]["policies"].as_array().unwrap().len(), 0);
+    assert_eq!(json["config"]["domains"]["app.example.com"]["policies"].as_array().unwrap().len(), 0);
 }
 
 #[tokio::test]
@@ -816,17 +814,16 @@ async fn test_add_domain_policy() {
         .await
         .unwrap();
 
-    // Add domain policy
+    // Add domain policy via new endpoint
     let response = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/organizations/dp-org/domain-policies")
+                .uri("/api/organizations/dp-org/domains/app.example.com/policies")
                 .header("authorization", format!("Bearer {}", token))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_string(&serde_json::json!({
-                    "domain": "app.example.com",
                     "policy_id": "domain-deny",
                     "name": "Deny Admin on App Domain",
                     "effect": "Deny",
@@ -845,7 +842,7 @@ async fn test_add_domain_policy() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let dp = json["config"]["domain_policies"]["app.example.com"].as_array().unwrap();
+    let dp = json["config"]["domains"]["app.example.com"]["policies"].as_array().unwrap();
     assert_eq!(dp.len(), 1);
     assert_eq!(dp[0]["effect"], "Deny");
 }
@@ -871,16 +868,15 @@ async fn test_remove_domain_policy() {
         .await
         .unwrap();
 
-    // Add domain policy
+    // Add domain policy via new endpoint
     app.clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/organizations/rmdp-org/domain-policies")
+                .uri("/api/organizations/rmdp-org/domains/app.example.com/policies")
                 .header("authorization", format!("Bearer {}", token))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_string(&serde_json::json!({
-                    "domain": "app.example.com",
                     "policy_id": "rm-dpol",
                     "name": "To Remove",
                     "rules": [{"resource_type": "prefix", "resource_value": "/", "methods": ["GET"]}]
@@ -896,7 +892,7 @@ async fn test_remove_domain_policy() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri("/api/organizations/rmdp-org/domain-policies/app.example.com/rm-dpol")
+                .uri("/api/organizations/rmdp-org/domains/app.example.com/policies/rm-dpol")
                 .header("authorization", format!("Bearer {}", token))
                 .body(Body::empty())
                 .unwrap(),
@@ -907,7 +903,7 @@ async fn test_remove_domain_policy() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let dp = json["config"]["domain_policies"]["app.example.com"].as_array().unwrap();
+    let dp = json["config"]["domains"]["app.example.com"]["policies"].as_array().unwrap();
     assert_eq!(dp.len(), 0);
 }
 
@@ -932,13 +928,13 @@ async fn test_multiple_policies_ordering() {
         .await
         .unwrap();
 
-    // Add 3 policies
+    // Add 3 policies to domain
     for i in 0..3 {
         app.clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/organizations/multi-org/policies")
+                    .uri("/api/organizations/multi-org/domains/app.example.com/policies")
                     .header("authorization", format!("Bearer {}", token))
                     .header("content-type", "application/json")
                     .body(Body::from(serde_json::to_string(&serde_json::json!({
@@ -967,7 +963,7 @@ async fn test_multiple_policies_ordering() {
 
     let body = response.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let policies = json["config"]["policies"].as_array().unwrap();
+    let policies = json["config"]["domains"]["app.example.com"]["policies"].as_array().unwrap();
     assert_eq!(policies.len(), 3);
     assert_eq!(policies[0]["id"], "pol-0");
     assert_eq!(policies[1]["id"], "pol-1");
@@ -1008,10 +1004,10 @@ async fn test_create_org_auto_generates_jwt_keys() {
     assert!(!jwt_key.is_empty());
 
     // TLS cert should be auto-generated
-    let tls_cert = json["config"]["tls"]["app.example.com"]["cert_pem"].as_str().unwrap();
+    let tls_cert = json["config"]["domains"]["app.example.com"]["tls"]["cert_pem"].as_str().unwrap();
     assert!(tls_cert.contains("BEGIN CERTIFICATE"));
 
-    let tls_key = json["config"]["tls"]["app.example.com"]["key_pem"].as_str().unwrap();
+    let tls_key = json["config"]["domains"]["app.example.com"]["tls"]["key_pem"].as_str().unwrap();
     assert!(tls_key.contains("BEGIN PRIVATE KEY"));
 }
 
@@ -1032,19 +1028,19 @@ async fn test_create_org_with_manual_keys() {
                 .body(Body::from(serde_json::to_string(&serde_json::json!({
                     "id": "manual-org",
                     "name": "Manual Org",
-                    "domains": ["manual.example.com"],
-                    "upstream_base_url": "http://localhost:8080",
-                    "upstream_timeout_ms": 5000,
+                    "domains": {
+                        "manual.example.com": {
+                            "upstream_base_url": "http://localhost:8080",
+                            "upstream_timeout_ms": 5000,
+                            "auto_generate_tls": false,
+                            "cert_pem": "-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----",
+                            "key_pem": "-----BEGIN PRIVATE KEY-----\nMIIB...\n-----END PRIVATE KEY-----"
+                        }
+                    },
                     "jwt_issuer": "https://auth.example.com",
                     "jwt_audience": "quicguard",
                     "auto_generate_jwt_keys": false,
-                    "jwt_public_key": "-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----",
-                    "tls_configs": [{
-                        "domain": "manual.example.com",
-                        "auto_generate": false,
-                        "cert_pem": "-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----",
-                        "key_pem": "-----BEGIN PRIVATE KEY-----\nMIIB...\n-----END PRIVATE KEY-----"
-                    }]
+                    "jwt_public_key": "-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----"
                 })).unwrap()))
                 .unwrap(),
         )
@@ -1056,8 +1052,8 @@ async fn test_create_org_with_manual_keys() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     assert!(json["config"]["auth"]["jwt_public_key"].as_str().unwrap().contains("MIIB..."));
-    assert!(json["config"]["tls"]["manual.example.com"]["cert_pem"].as_str().unwrap().contains("MIIB..."));
-    assert!(json["config"]["tls"]["manual.example.com"]["key_pem"].as_str().unwrap().contains("MIIB..."));
+    assert!(json["config"]["domains"]["manual.example.com"]["tls"]["cert_pem"].as_str().unwrap().contains("MIIB..."));
+    assert!(json["config"]["domains"]["manual.example.com"]["tls"]["key_pem"].as_str().unwrap().contains("MIIB..."));
 }
 
 // ============================================================================

@@ -106,13 +106,18 @@ impl TestContext {
     /// Builds the full app router (without middleware — for unit tests that call handlers directly).
     pub fn app(&self) -> axum::Router {
         let state = (self.pool.clone(), self.config.clone());
+        let org_routes = dashboard::routes::organizations::org_router()
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                dashboard::middleware::auth_middleware,
+            ));
         axum::Router::new()
             .nest(
                 "/api",
                 axum::Router::new()
                     .nest("/auth", dashboard::routes::auth::auth_router())
                     .nest("/admin", dashboard::routes::admin::admin_router())
-                    .nest("/organizations", dashboard::routes::organizations::org_router()),
+                    .nest("/organizations", org_routes),
             )
             .with_state(state)
     }

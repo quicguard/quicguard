@@ -287,7 +287,10 @@ where
     let outbound_body = StreamBody::new(body_stream).boxed();
 
     // ── 4. Build the outbound request to the HTTP/1.1 backend ────────────────
-    let backend_base = org.upstream.base_url.trim_end_matches('/');
+    let domain_config = org.domains.get(&domain).ok_or_else(|| {
+        anyhow::anyhow!("No configuration for domain '{domain}'")
+    })?;
+    let backend_base = domain_config.upstream.base_url.trim_end_matches('/');
     let uri = format!("{}{}", backend_base, uri_path);
     let mut backend_req = Request::builder().method(method).uri(&uri);
 

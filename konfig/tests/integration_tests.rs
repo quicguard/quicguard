@@ -25,37 +25,40 @@ fn make_sample_org(org_id: &str, domain: &str, cookie_name: &str) -> Organizatio
     Organization {
         id: org_id.to_string(),
         name: format!("Org {org_id}"),
-        domains: vec![domain.to_string()],
-        policies: vec![
-            Policy {
-                id: "allow-read".to_string(),
-                name: "Allow reading".to_string(),
-                rules: vec![PolicyRule {
-                    resource: ResourcePattern::Prefix("/api/".to_string()),
-                    methods: HashSet::from([HttpMethod::Get, HttpMethod::Head]),
-                    conditions: vec![],
-                }],
-                effect: PolicyEffect::Allow,
+        domains: HashMap::from([(
+            domain.to_string(),
+            DomainConfig {
+                upstream: UpstreamConfig {
+                    base_url: "http://127.0.0.1:1025".to_string(),
+                    timeout_ms: 5000,
+                    max_retries: 3,
+                },
+                tls: TlsConfig::default(),
+                policies: vec![
+                    Policy {
+                        id: "allow-read".to_string(),
+                        name: "Allow reading".to_string(),
+                        rules: vec![PolicyRule {
+                            resource: ResourcePattern::Prefix("/api/".to_string()),
+                            methods: HashSet::from([HttpMethod::Get, HttpMethod::Head]),
+                            conditions: vec![],
+                        }],
+                        effect: PolicyEffect::Allow,
+                    },
+                    Policy {
+                        id: "deny-delete".to_string(),
+                        name: "Deny delete on admin".to_string(),
+                        rules: vec![PolicyRule {
+                            resource: ResourcePattern::Prefix("/api/admin/".to_string()),
+                            methods: HashSet::from([HttpMethod::Delete]),
+                            conditions: vec![],
+                        }],
+                        effect: PolicyEffect::Deny,
+                    },
+                ],
             },
-            Policy {
-                id: "deny-delete".to_string(),
-                name: "Deny delete on admin".to_string(),
-                rules: vec![PolicyRule {
-                    resource: ResourcePattern::Prefix("/api/admin/".to_string()),
-                    methods: HashSet::from([HttpMethod::Delete]),
-                    conditions: vec![],
-                }],
-                effect: PolicyEffect::Deny,
-            },
-        ],
-        domain_policies: HashMap::new(),
-        upstream: UpstreamConfig {
-            base_url: "http://127.0.0.1:1025".to_string(),
-            timeout_ms: 5000,
-            max_retries: 3,
-        },
+        )]),
         auth: make_auth_config(cookie_name),
-        tls: HashMap::new(),
     }
 }
 
@@ -422,38 +425,40 @@ fn test_config_from_json_roundtrip() {
     let json = r#"{
         "id": "org1",
         "name": "Demo Corp",
-        "domains": ["demo.localhost"],
-        "policies": [
-            {
-                "id": "allow-read",
-                "name": "Allow reading",
-                "rules": [
+        "domains": {
+            "demo.localhost": {
+                "upstream": {
+                    "base_url": "http://127.0.0.1:1025",
+                    "timeout_ms": 5000,
+                    "max_retries": 3
+                },
+                "policies": [
                     {
-                        "resource": {"Prefix": "/api/"},
-                        "methods": ["GET", "HEAD"],
-                        "conditions": []
-                    }
-                ],
-                "effect": "Allow"
-            },
-            {
-                "id": "deny-delete-admin",
-                "name": "Deny delete on admin",
-                "rules": [
+                        "id": "allow-read",
+                        "name": "Allow reading",
+                        "rules": [
+                            {
+                                "resource": {"Prefix": "/api/"},
+                                "methods": ["GET", "HEAD"],
+                                "conditions": []
+                            }
+                        ],
+                        "effect": "Allow"
+                    },
                     {
-                        "resource": {"Prefix": "/api/admin/"},
-                        "methods": ["DELETE"],
-                        "conditions": []
+                        "id": "deny-delete-admin",
+                        "name": "Deny delete on admin",
+                        "rules": [
+                            {
+                                "resource": {"Prefix": "/api/admin/"},
+                                "methods": ["DELETE"],
+                                "conditions": []
+                            }
+                        ],
+                        "effect": "Deny"
                     }
-                ],
-                "effect": "Deny"
+                ]
             }
-        ],
-        "domain_policies": {},
-        "upstream": {
-            "base_url": "http://127.0.0.1:1025",
-            "timeout_ms": 5000,
-            "max_retries": 3
         },
         "auth": {
             "jwt_issuer": "https://auth.quicguard.dev",
@@ -467,10 +472,11 @@ fn test_config_from_json_roundtrip() {
 
     let org: Organization = serde_json::from_str(json).unwrap();
     assert_eq!(org.id, "org1");
-    assert_eq!(org.domains, vec!["demo.localhost"]);
-    assert_eq!(org.upstream.base_url, "http://127.0.0.1:1025");
+    assert!(org.domains.contains_key("demo.localhost"));
+    let domain_cfg = org.domains.get("demo.localhost").unwrap();
+    assert_eq!(domain_cfg.upstream.base_url, "http://127.0.0.1:1025");
+    assert_eq!(domain_cfg.policies.len(), 2);
     assert_eq!(org.auth.cookie_name, "session_token");
-    assert_eq!(org.policies.len(), 2);
 
     // Verify it serializes back cleanly
     let serialized = serde_json::to_string(&org).unwrap();
