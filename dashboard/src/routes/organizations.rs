@@ -117,7 +117,7 @@ fn build_org_config(input: &CreateOrganizationStructured) -> Result<Value, Strin
     Ok(config)
 }
 
-fn build_policy_value(input: &AddPolicy) -> Value {
+pub fn build_policy_value(input: &AddPolicy) -> Value {
     tracing::debug!(policy_id = %input.policy_id, name = %input.name, effect = ?input.effect,
         rules_count = input.rules.len(), "Building policy value");
 
