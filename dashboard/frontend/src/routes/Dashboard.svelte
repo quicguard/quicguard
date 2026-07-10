@@ -38,6 +38,8 @@
   let cookieName = 'session_token';
   let redirectUrl = '';
   let idpUrl = '';
+  let reqParamName = 'req';
+  let tokenParamName = 'token';
 
   // --- Org detail view ---
   let selectedOrg = null;
@@ -69,6 +71,8 @@
   let editCookieName = '';
   let editRedirectUrl = '';
   let editIdpUrl = '';
+  let editReqParamName = 'req';
+  let editTokenParamName = 'token';
 
   // --- Per-domain policy form (in create/edit wizards) ---
   let policyTarget = ''; // domain key within createDomains or editDomains
@@ -167,6 +171,8 @@
     cookieName = 'session_token';
     redirectUrl = '';
     idpUrl = '';
+    reqParamName = 'req';
+    tokenParamName = 'token';
   }
 
   function addCreateDomain() {
@@ -407,6 +413,8 @@
         cookie_name: cookieName || null,
         redirect_url: redirectUrl || null,
         idp_url: idpUrl || null,
+        req_param_name: reqParamName || null,
+        token_param_name: tokenParamName || null,
       });
 
       showCreateWizard = false;
@@ -500,6 +508,8 @@
     editCookieName = orgDetail.config.auth?.cookie_name || '';
     editRedirectUrl = orgDetail.config.auth?.redirect_url || '';
     editIdpUrl = orgDetail.config.auth?.idp_url || '';
+    editReqParamName = orgDetail.config.auth?.req_param_name || 'req';
+    editTokenParamName = orgDetail.config.auth?.token_param_name || 'token';
   }
 
   function cancelEdit() {
@@ -583,6 +593,8 @@
         cookie_name: editCookieName || undefined,
         redirect_url: editRedirectUrl || undefined,
         idp_url: editIdpUrl || undefined,
+        req_param_name: editReqParamName || undefined,
+        token_param_name: editTokenParamName || undefined,
       };
 
       await api.orgs.update(selectedOrg.id, payload);
@@ -782,6 +794,8 @@
             <p>Cookie Name: <code>{orgDetail.config.auth?.cookie_name || '-'}</code></p>
             <p>Redirect URL: <code>{orgDetail.config.auth?.redirect_url || '-'}</code></p>
             <p>IDP URL: <code>{orgDetail.config.auth?.idp_url || '-'}</code></p>
+            <p>Request Param: <code>{orgDetail.config.auth?.req_param_name || 'req'}</code></p>
+            <p>Token Param: <code>{orgDetail.config.auth?.token_param_name || 'token'}</code></p>
           </div>
 
           <!-- Detail policy form -->
@@ -1042,6 +1056,8 @@
                 <label>Cookie Name <input bind:value={editCookieName} /></label>
                 <label>Redirect URL <input bind:value={editRedirectUrl} /></label>
                 <label>IDP URL <input bind:value={editIdpUrl} /></label>
+                <label>Request Parameter Name <input bind:value={editReqParamName} placeholder="req" /></label>
+                <label>Token Parameter Name <input bind:value={editTokenParamName} placeholder="token" /></label>
               </div>
             {/if}
 
@@ -1259,6 +1275,8 @@
             <label>Cookie Name <input bind:value={cookieName} placeholder="session_token" /></label>
             <label>Redirect URL <input bind:value={redirectUrl} placeholder="https://auth.example.com/login" /></label>
             <label>IDP URL <input bind:value={idpUrl} placeholder="https://auth.example.com/idp" /></label>
+            <label>Request Parameter Name <input bind:value={reqParamName} placeholder="req" /></label>
+            <label>Token Parameter Name <input bind:value={tokenParamName} placeholder="token" /></label>
           </div>
         {/if}
 
