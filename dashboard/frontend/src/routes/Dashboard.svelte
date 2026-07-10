@@ -26,6 +26,10 @@
   // Step 3: Apps
   let createApps = [makeAppEntry()];
 
+  // Step 4: User Groups
+  let createUserGroups = [makeUserGroupEntry()];
+  let createAppUserGroups = {};
+
   // Step 5: Auth
   let jwtIssuer = '';
   let jwtAudience = '';
@@ -56,6 +60,8 @@
   let editName = '';
   let editDomains = [makeDomainEntry()];
   let editApps = [makeAppEntry()];
+  let editUserGroups = [makeUserGroupEntry()];
+  let editAppUserGroups = {};
   let editJwtIssuer = '';
   let editJwtAudience = '';
   let editAutoGenerateJwt = false;
@@ -89,6 +95,14 @@
       id: '',
       domains: [],
       policies: [],
+    };
+  }
+
+  function makeUserGroupEntry() {
+    return {
+      id: '',
+      emails: [],
+      emailPatterns: [],
     };
   }
 
@@ -144,6 +158,8 @@
     newName = '';
     createDomains = [makeDomainEntry()];
     createApps = [makeAppEntry()];
+    createUserGroups = [makeUserGroupEntry()];
+    createAppUserGroups = {};
     jwtIssuer = '';
     jwtAudience = '';
     autoGenerateJwt = true;
@@ -174,6 +190,98 @@
       app.domains = app.domains.filter(d => d !== domain);
     } else {
       app.domains = [...app.domains, domain];
+    }
+  }
+
+  // --- User Groups (create wizard) ---
+  function addUserGroup() {
+    createUserGroups = [...createUserGroups, makeUserGroupEntry()];
+  }
+
+  function removeUserGroup(i) {
+    const groupId = createUserGroups[i].id;
+    for (const appId in createAppUserGroups) {
+      createAppUserGroups[appId] = createAppUserGroups[appId].filter(g => g !== groupId);
+    }
+    createUserGroups = createUserGroups.filter((_, idx) => idx !== i);
+  }
+
+  function addEmail(groupIdx) {
+    createUserGroups[groupIdx].emails = [...createUserGroups[groupIdx].emails, ''];
+  }
+
+  function removeEmail(groupIdx, emailIdx) {
+    createUserGroups[groupIdx].emails = createUserGroups[groupIdx].emails.filter((_, i) => i !== emailIdx);
+    createUserGroups = createUserGroups;
+  }
+
+  function addEmailPattern(groupIdx) {
+    createUserGroups[groupIdx].emailPatterns = [...createUserGroups[groupIdx].emailPatterns, ''];
+  }
+
+  function removeEmailPattern(groupIdx, patternIdx) {
+    createUserGroups[groupIdx].emailPatterns = createUserGroups[groupIdx].emailPatterns.filter((_, i) => i !== patternIdx);
+    createUserGroups = createUserGroups;
+  }
+
+  function isGroupAssignedToApp(groupId, appId) {
+    return createAppUserGroups[appId]?.includes(groupId) || false;
+  }
+
+  function toggleGroupAppAssignment(groupId, appId) {
+    if (!createAppUserGroups[appId]) {
+      createAppUserGroups[appId] = [];
+    }
+    if (createAppUserGroups[appId].includes(groupId)) {
+      createAppUserGroups[appId] = createAppUserGroups[appId].filter(g => g !== groupId);
+    } else {
+      createAppUserGroups[appId].push(groupId);
+    }
+  }
+
+  // --- User Groups (edit wizard) ---
+  function addEditUserGroup() {
+    editUserGroups = [...editUserGroups, makeUserGroupEntry()];
+  }
+
+  function removeEditUserGroup(i) {
+    const groupId = editUserGroups[i].id;
+    for (const appId in editAppUserGroups) {
+      editAppUserGroups[appId] = editAppUserGroups[appId].filter(g => g !== groupId);
+    }
+    editUserGroups = editUserGroups.filter((_, idx) => idx !== i);
+  }
+
+  function addEditEmail(groupIdx) {
+    editUserGroups[groupIdx].emails = [...editUserGroups[groupIdx].emails, ''];
+  }
+
+  function removeEditEmail(groupIdx, emailIdx) {
+    editUserGroups[groupIdx].emails = editUserGroups[groupIdx].emails.filter((_, i) => i !== emailIdx);
+    editUserGroups = editUserGroups;
+  }
+
+  function addEditEmailPattern(groupIdx) {
+    editUserGroups[groupIdx].emailPatterns = [...editUserGroups[groupIdx].emailPatterns, ''];
+  }
+
+  function removeEditEmailPattern(groupIdx, patternIdx) {
+    editUserGroups[groupIdx].emailPatterns = editUserGroups[groupIdx].emailPatterns.filter((_, i) => i !== patternIdx);
+    editUserGroups = editUserGroups;
+  }
+
+  function isEditGroupAssignedToApp(groupId, appId) {
+    return editAppUserGroups[appId]?.includes(groupId) || false;
+  }
+
+  function toggleEditGroupAppAssignment(groupId, appId) {
+    if (!editAppUserGroups[appId]) {
+      editAppUserGroups[appId] = [];
+    }
+    if (editAppUserGroups[appId].includes(groupId)) {
+      editAppUserGroups[appId] = editAppUserGroups[appId].filter(g => g !== groupId);
+    } else {
+      editAppUserGroups[appId].push(groupId);
     }
   }
 
@@ -276,11 +384,22 @@
         };
       }
 
+      const userGroupsObj = {};
+      for (const g of createUserGroups) {
+        if (!g.id.trim()) continue;
+        userGroupsObj[g.id.trim()] = {
+          emails: g.emails.filter(e => e.trim()),
+          email_patterns: g.emailPatterns.filter(p => p.trim()),
+        };
+      }
+
       await api.orgs.create({
         id: newId.trim(),
         name: newName.trim(),
         domains: domainsObj,
         apps: appsObj,
+        user_groups: userGroupsObj,
+        app_user_groups: createAppUserGroups,
         jwt_issuer: jwtIssuer.trim(),
         jwt_audience: jwtAudience.trim(),
         jwt_public_key: autoGenerateJwt ? null : jwtPublicKey || null,
@@ -359,6 +478,21 @@
     }
     if (editApps.length === 0) editApps = [makeAppEntry()];
 
+    // Build editUserGroups from orgDetail.config.user_groups
+    editUserGroups = [];
+    const userGroupsObj = orgDetail.config.user_groups || {};
+    for (const [groupId, groupCfg] of Object.entries(userGroupsObj)) {
+      editUserGroups.push({
+        id: groupId,
+        emails: groupCfg.emails || [],
+        emailPatterns: groupCfg.email_patterns || [],
+      });
+    }
+    if (editUserGroups.length === 0) editUserGroups = [makeUserGroupEntry()];
+
+    // Build editAppUserGroups from orgDetail.config.app_user_groups
+    editAppUserGroups = orgDetail.config.app_user_groups || {};
+
     editJwtIssuer = orgDetail.config.auth?.jwt_issuer || '';
     editJwtAudience = orgDetail.config.auth?.jwt_audience || '';
     editAutoGenerateJwt = false;
@@ -427,10 +561,21 @@
         };
       }
 
+      const userGroupsObj = {};
+      for (const g of editUserGroups) {
+        if (!g.id.trim()) continue;
+        userGroupsObj[g.id.trim()] = {
+          emails: g.emails.filter(e => e.trim()),
+          email_patterns: g.emailPatterns.filter(p => p.trim()),
+        };
+      }
+
       const payload = {
         name: editName.trim() || undefined,
         domains: Object.keys(domainsObj).length > 0 ? domainsObj : undefined,
         apps: Object.keys(appsObj).length > 0 ? appsObj : undefined,
+        user_groups: userGroupsObj,
+        app_user_groups: editAppUserGroups,
         jwt_issuer: editJwtIssuer.trim() || undefined,
         jwt_audience: editJwtAudience.trim() || undefined,
         jwt_public_key: editAutoGenerateJwt ? null : (editJwtPublicKey || undefined),
@@ -834,7 +979,54 @@
 
             {:else if editStep === 4}
               <div class="step-content">
-                <p class="muted">User Groups configuration coming soon.</p>
+                <p class="muted">Define user groups with email patterns for matching users. Assign groups to apps to control access.</p>
+                {#each editUserGroups as _, i}
+                  <div class="user-group-card">
+                    <div class="user-group-header">
+                      <label class="group-label">Group ID
+                        <input bind:value={editUserGroups[i].id} placeholder="e.g. admins, team-a" />
+                      </label>
+                      {#if editUserGroups.length > 1}
+                        <button class="btn-delete-sm" on:click={() => removeEditUserGroup(i)}>Remove group</button>
+                      {/if}
+                    </div>
+                    <div class="user-group-body">
+                      <div class="config-group">
+                        <h4>Exact Emails</h4>
+                        {#each editUserGroups[i].emails as _, ei}
+                          <div class="email-row">
+                            <input bind:value={editUserGroups[i].emails[ei]} placeholder="user@example.com" />
+                            <button class="btn-delete-sm" on:click={() => removeEditEmail(i, ei)}>x</button>
+                          </div>
+                        {/each}
+                        <button class="btn-add-sm" on:click={() => addEditEmail(i)}>+ Add Email</button>
+                      </div>
+                      <div class="config-group">
+                        <h4>Email Patterns</h4>
+                        {#each editUserGroups[i].emailPatterns as _, pi}
+                          <div class="email-row">
+                            <input bind:value={editUserGroups[i].emailPatterns[pi]} placeholder="e.g. *@company.com, team-*@org.io" />
+                            <button class="btn-delete-sm" on:click={() => removeEditEmailPattern(i, pi)}>x</button>
+                          </div>
+                        {/each}
+                        <button class="btn-add-sm" on:click={() => addEditEmailPattern(i)}>+ Add Pattern</button>
+                      </div>
+                      <div class="config-group">
+                        <h4>Assign to Apps</h4>
+                        {#if editApps.filter(a => a.id.trim()).length === 0}
+                          <span class="muted">No apps configured yet. Add apps in the previous step.</span>
+                        {:else}
+                          {#each editApps.filter(a => a.id.trim()) as app}
+                            <label class="check-label">
+                              <input type="checkbox" checked={isEditGroupAssignedToApp(editUserGroups[i].id, app.id)} on:change={() => toggleEditGroupAppAssignment(editUserGroups[i].id, app.id)} /> {app.id}
+                            </label>
+                          {/each}
+                        {/if}
+                      </div>
+                    </div>
+                  </div>
+                {/each}
+                <button class="btn-add-sm" on:click={addEditUserGroup}>+ Add User Group</button>
               </div>
 
             {:else if editStep === 5}
@@ -1000,10 +1192,57 @@
             <button class="btn-add-sm" on:click={addCreateApp}>+ Add App</button>
           </div>
 
-        <!-- Step 4: User Groups (placeholder) -->
+        <!-- Step 4: User Groups -->
         {:else if createStep === 4}
           <div class="step-content">
-            <p class="muted">User Groups configuration coming soon.</p>
+            <p class="muted">Define user groups with email patterns for matching users. Assign groups to apps to control access.</p>
+            {#each createUserGroups as _, i}
+              <div class="user-group-card">
+                <div class="user-group-header">
+                  <label class="group-label">Group ID
+                    <input bind:value={createUserGroups[i].id} placeholder="e.g. admins, team-a" />
+                  </label>
+                  {#if createUserGroups.length > 1}
+                    <button class="btn-delete-sm" on:click={() => removeUserGroup(i)}>Remove group</button>
+                  {/if}
+                </div>
+                <div class="user-group-body">
+                  <div class="config-group">
+                    <h4>Exact Emails</h4>
+                    {#each createUserGroups[i].emails as _, ei}
+                      <div class="email-row">
+                        <input bind:value={createUserGroups[i].emails[ei]} placeholder="user@example.com" />
+                        <button class="btn-delete-sm" on:click={() => removeEmail(i, ei)}>x</button>
+                      </div>
+                    {/each}
+                    <button class="btn-add-sm" on:click={() => addEmail(i)}>+ Add Email</button>
+                  </div>
+                  <div class="config-group">
+                    <h4>Email Patterns</h4>
+                    {#each createUserGroups[i].emailPatterns as _, pi}
+                      <div class="email-row">
+                        <input bind:value={createUserGroups[i].emailPatterns[pi]} placeholder="e.g. *@company.com, team-*@org.io" />
+                        <button class="btn-delete-sm" on:click={() => removeEmailPattern(i, pi)}>x</button>
+                      </div>
+                    {/each}
+                    <button class="btn-add-sm" on:click={() => addEmailPattern(i)}>+ Add Pattern</button>
+                  </div>
+                  <div class="config-group">
+                    <h4>Assign to Apps</h4>
+                    {#if createApps.filter(a => a.id.trim()).length === 0}
+                      <span class="muted">No apps configured yet. Add apps in the previous step.</span>
+                    {:else}
+                      {#each createApps.filter(a => a.id.trim()) as app}
+                        <label class="check-label">
+                          <input type="checkbox" checked={isGroupAssignedToApp(createUserGroups[i].id, app.id)} on:change={() => toggleGroupAppAssignment(createUserGroups[i].id, app.id)} /> {app.id}
+                        </label>
+                      {/each}
+                    {/if}
+                  </div>
+                </div>
+              </div>
+            {/each}
+            <button class="btn-add-sm" on:click={addUserGroup}>+ Add User Group</button>
           </div>
 
         <!-- Step 5: Auth -->
@@ -1209,6 +1448,14 @@
   .app-config-header { display: flex; justify-content: space-between; align-items: flex-end; padding: 0.6rem 0.8rem; background: #f0f0f0; border-radius: 6px 6px 0 0; }
   .app-label { margin: 0; font-weight: 600; }
   .app-config-body { padding: 0.6rem 0.8rem; }
+
+  /* User Group card (wizard) */
+  .user-group-card { background: #f8f9fa; border: 1px solid #ddd; border-radius: 6px; margin: 0.6rem 0; }
+  .user-group-header { display: flex; justify-content: space-between; align-items: flex-end; padding: 0.6rem 0.8rem; background: #f0f0f0; border-radius: 6px 6px 0 0; }
+  .group-label { margin: 0; font-weight: 600; }
+  .user-group-body { padding: 0.6rem 0.8rem; }
+  .email-row { display: flex; gap: 0.4rem; align-items: center; margin: 0.3rem 0; }
+  .email-row input { flex: 1; }
 
   /* Policy cards */
   .policy-card { background: #f8f9fa; border: 1px solid #eee; border-radius: 6px; padding: 0.8rem; margin: 0.5rem 0; }
