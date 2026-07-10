@@ -105,13 +105,14 @@ where
 
     let cookie_name = &org.auth.cookie_name;
 
-    // If the request contains a `token` query parameter (IDP callback),
+    // If the request contains the IDP callback token query parameter,
     // set it as a cookie and redirect to the same path without the token.
+    let token_param = &org.auth.token_param_name;
     if let Some(query) = req.uri().query() {
         for pair in query.split('&') {
             let mut kv = pair.splitn(2, '=');
             if let (Some(key), Some(val)) = (kv.next(), kv.next()) {
-                if key == "token" && !val.is_empty() {
+                if key == token_param && !val.is_empty() {
                     let (mut send_stream, _recv_stream) = stream.split();
                     let clean_path = req
                         .uri()
@@ -160,7 +161,8 @@ where
                 return Ok(format!("rejected: missing token cookie for domain {domain}"));
             }
             let original_url = format!("https://{domain}{uri_path}");
-            let callback_url = format!("{idp_url}?redirect_uri={}", urlencoding::encode(&original_url));
+            let req_param = &org.auth.req_param_name;
+            let callback_url = format!("{idp_url}?{req_param}={}", urlencoding::encode(&original_url));
             let resp = http::Response::builder()
                 .status(302)
                 .header("location", callback_url)
@@ -192,7 +194,8 @@ where
                 return Ok(format!("rejected: invalid token for domain {domain}"));
             }
             let original_url = format!("https://{domain}{uri_path}");
-            let callback_url = format!("{idp_url}?redirect_uri={}", urlencoding::encode(&original_url));
+            let req_param = &org.auth.req_param_name;
+            let callback_url = format!("{idp_url}?{req_param}={}", urlencoding::encode(&original_url));
             let resp = http::Response::builder()
                 .status(302)
                 .header("location", callback_url)

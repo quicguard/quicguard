@@ -297,9 +297,12 @@ async fn run_server(args: Args) -> Result<()> {
         jwt_audience: String::new(),
         jwks_url: String::new(),
         jwt_public_key: String::new(),
+        jwt_private_key: String::new(),
         cookie_name: "session_token".to_string(),
         redirect_url: args.redirect_url.clone(),
         idp_url: args.idp_url.clone(),
+        req_param_name: "req".to_string(),
+        token_param_name: "token".to_string(),
     };
 
     let proxy_state = match ProxyState::from_redis(redis_config.clone(), auth_config).await {
@@ -849,9 +852,12 @@ q+6k53HLaEgUGqHB/8sLTHSYsrShRANCAATE8koiwsNxKP9zTbVhcZ3luJxxuCfo
             jwt_audience: String::new(),
             jwks_url: String::new(),
             jwt_public_key: String::new(),
+            jwt_private_key: String::new(),
             cookie_name: "session_token".to_string(),
             redirect_url: String::new(),
             idp_url: String::new(),
+            req_param_name: "req".to_string(),
+            token_param_name: "token".to_string(),
         }
     }
 
@@ -881,7 +887,6 @@ q+6k53HLaEgUGqHB/8sLTHSYsrShRANCAATE8koiwsNxKP9zTbVhcZ3luJxxuCfo
                     DomainConfig {
                         upstream: make_upstream(),
                         tls: TlsConfig { cert_pem, key_pem },
-                        policies: vec![],
                     },
                 )
             })
@@ -890,6 +895,9 @@ q+6k53HLaEgUGqHB/8sLTHSYsrShRANCAATE8koiwsNxKP9zTbVhcZ3luJxxuCfo
             id: org_id.to_string(),
             name: format!("Org {org_id}"),
             domains: domain_configs,
+            apps: HashMap::new(),
+            user_groups: HashMap::new(),
+            app_user_groups: HashMap::new(),
             auth: make_auth(),
         }
     }
@@ -934,9 +942,11 @@ q+6k53HLaEgUGqHB/8sLTHSYsrShRANCAATE8koiwsNxKP9zTbVhcZ3luJxxuCfo
                 DomainConfig {
                     upstream: make_upstream(),
                     tls: TlsConfig::default(),
-                    policies: vec![],
                 },
             )]),
+            apps: HashMap::new(),
+            user_groups: HashMap::new(),
+            app_user_groups: HashMap::new(),
             auth: make_auth(),
         };
         let state = make_state(vec![org]).await;
