@@ -23,7 +23,10 @@
   // Step 2: Domains (each has upstream, TLS, policies)
   let createDomains = [makeDomainEntry()];
 
-  // Step 3: Auth
+  // Step 3: Apps
+  let createApps = [makeAppEntry()];
+
+  // Step 5: Auth
   let jwtIssuer = '';
   let jwtAudience = '';
   let autoGenerateJwt = true;
@@ -52,6 +55,7 @@
   let editError = '';
   let editName = '';
   let editDomains = [makeDomainEntry()];
+  let editApps = [makeAppEntry()];
   let editJwtIssuer = '';
   let editJwtAudience = '';
   let editAutoGenerateJwt = false;
@@ -76,6 +80,14 @@
       autoGenerateTls: true,
       tlsCertPem: '',
       tlsKeyPem: '',
+      policies: [],
+    };
+  }
+
+  function makeAppEntry() {
+    return {
+      id: '',
+      domains: [],
       policies: [],
     };
   }
@@ -131,6 +143,7 @@
     newId = '';
     newName = '';
     createDomains = [makeDomainEntry()];
+    createApps = [makeAppEntry()];
     jwtIssuer = '';
     jwtAudience = '';
     autoGenerateJwt = true;
@@ -146,6 +159,27 @@
 
   function removeCreateDomain(i) {
     createDomains = createDomains.filter((_, idx) => idx !== i);
+  }
+
+  function addCreateApp() {
+    createApps = [...createApps, makeAppEntry()];
+  }
+
+  function removeCreateApp(i) {
+    createApps = createApps.filter((_, idx) => idx !== i);
+  }
+
+  function toggleAppDomain(app, domain) {
+    if (app.domains.includes(domain)) {
+      app.domains = app.domains.filter(d => d !== domain);
+    } else {
+      app.domains = [...app.domains, domain];
+    }
+  }
+
+  function removeCreateAppPolicy(appIdx, polIdx) {
+    createApps[appIdx].policies = createApps[appIdx].policies.filter((_, i) => i !== polIdx);
+    createApps = createApps;
   }
 
   function toggleMethod(rule, method) {
@@ -233,10 +267,20 @@
         };
       }
 
+      const appsObj = {};
+      for (const a of createApps) {
+        if (!a.id.trim()) continue;
+        appsObj[a.id.trim()] = {
+          domains: a.domains,
+          policies: a.policies,
+        };
+      }
+
       await api.orgs.create({
         id: newId.trim(),
         name: newName.trim(),
         domains: domainsObj,
+        apps: appsObj,
         jwt_issuer: jwtIssuer.trim(),
         jwt_audience: jwtAudience.trim(),
         jwt_public_key: autoGenerateJwt ? null : jwtPublicKey || null,
@@ -303,6 +347,18 @@
     }
     if (editDomains.length === 0) editDomains = [makeDomainEntry()];
 
+    // Build editApps from orgDetail.config.apps (object keyed by app id)
+    editApps = [];
+    const appsObj = orgDetail.config.apps || {};
+    for (const [appId, appCfg] of Object.entries(appsObj)) {
+      editApps.push({
+        id: appId,
+        domains: appCfg.domains || [],
+        policies: appCfg.policies || [],
+      });
+    }
+    if (editApps.length === 0) editApps = [makeAppEntry()];
+
     editJwtIssuer = orgDetail.config.auth?.jwt_issuer || '';
     editJwtAudience = orgDetail.config.auth?.jwt_audience || '';
     editAutoGenerateJwt = false;
@@ -325,6 +381,27 @@
     editDomains = editDomains.filter((_, idx) => idx !== i);
   }
 
+  function addEditApp() {
+    editApps = [...editApps, makeAppEntry()];
+  }
+
+  function removeEditApp(i) {
+    editApps = editApps.filter((_, idx) => idx !== i);
+  }
+
+  function toggleEditAppDomain(app, domain) {
+    if (app.domains.includes(domain)) {
+      app.domains = app.domains.filter(d => d !== domain);
+    } else {
+      app.domains = [...app.domains, domain];
+    }
+  }
+
+  function removeEditAppPolicy(appIdx, polIdx) {
+    editApps[appIdx].policies = editApps[appIdx].policies.filter((_, i) => i !== polIdx);
+    editApps = editApps;
+  }
+
   async function submitEditOrg() {
     if (!selectedOrg) return;
     saving = true;
@@ -341,9 +418,19 @@
         };
       }
 
+      const appsObj = {};
+      for (const a of editApps) {
+        if (!a.id.trim()) continue;
+        appsObj[a.id.trim()] = {
+          domains: a.domains,
+          policies: a.policies,
+        };
+      }
+
       const payload = {
         name: editName.trim() || undefined,
         domains: Object.keys(domainsObj).length > 0 ? domainsObj : undefined,
+        apps: Object.keys(appsObj).length > 0 ? appsObj : undefined,
         jwt_issuer: editJwtIssuer.trim() || undefined,
         jwt_audience: editJwtAudience.trim() || undefined,
         jwt_public_key: editAutoGenerateJwt ? null : (editJwtPublicKey || undefined),
@@ -630,7 +717,7 @@
             {/if}
 
             <div class="steps">
-              {#each ['Basic Info', 'Domains', 'Auth'] as step, i}
+              {#each ['Basic Info', 'Domains', 'Apps', 'User Groups', 'Auth'] as step, i}
                 <span class="step" class:active={editStep === i + 1} class:done={editStep > i + 1}>
                   {i + 1}. {step}
                 </span>
@@ -696,6 +783,62 @@
               </div>
             {:else if editStep === 3}
               <div class="step-content">
+                <p class="muted">Define apps and assign domains to each app.</p>
+                {#each editApps as _, i}
+                  <div class="app-config-card">
+                    <div class="app-config-header">
+                      <label class="app-label">App ID
+                        <input bind:value={editApps[i].id} placeholder="my-app" />
+                      </label>
+                      {#if editApps.length > 1}
+                        <button class="btn-delete-sm" on:click={() => removeEditApp(i)}>Remove app</button>
+                      {/if}
+                    </div>
+                    <div class="app-config-body">
+                      <div class="config-group">
+                        <h4>Domains</h4>
+                        {#if editDomains.filter(d => d.name.trim()).length === 0}
+                          <span class="muted">No domains configured yet. Add domains in the previous step.</span>
+                        {:else}
+                          {#each editDomains.filter(d => d.name.trim()) as domain}
+                            <label class="check-label">
+                              <input type="checkbox" checked={editApps[i].domains.includes(domain.name)} on:change={() => toggleEditAppDomain(editApps[i], domain.name)} /> {domain.name}
+                            </label>
+                          {/each}
+                        {/if}
+                      </div>
+                      <div class="config-group">
+                        <h4>Policies</h4>
+                        {#each editApps[i].policies as pol, pi}
+                          <div class="policy-card">
+                            <div class="policy-header">
+                              <span class="policy-name">{pol.name}</span>
+                              <span class="badge" class:badge-allow={pol.effect === 'Allow'} class:badge-deny={pol.effect === 'Deny'}>{pol.effect}</span>
+                              <button class="btn-delete-sm" on:click={() => removeEditAppPolicy(i, pi)}>Remove</button>
+                            </div>
+                            {#each pol.rules as rule}
+                              <div class="policy-rule">
+                                <code>{rule.resource_type}: {rule.resource_value}</code>
+                                <span>{rule.methods.join(', ')}</span>
+                              </div>
+                            {/each}
+                          </div>
+                        {/each}
+                        <button class="btn-add-sm" on:click={() => { policyTarget = `app:${editApps[i].id}`; showWizardPolicyForm = true; }}>+ Add Policy</button>
+                      </div>
+                    </div>
+                  </div>
+                {/each}
+                <button class="btn-add-sm" on:click={addEditApp}>+ Add App</button>
+              </div>
+
+            {:else if editStep === 4}
+              <div class="step-content">
+                <p class="muted">User Groups configuration coming soon.</p>
+              </div>
+
+            {:else if editStep === 5}
+              <div class="step-content">
                 <label>JWT Issuer <input bind:value={editJwtIssuer} placeholder="https://auth.example.com" /></label>
                 <label>JWT Audience <input bind:value={editJwtAudience} placeholder="quicguard-proxy" /></label>
                 <label class="check-label">
@@ -714,7 +857,7 @@
               {#if editStep > 1}
                 <button class="btn-cancel" on:click={() => editStep--}>Back</button>
               {/if}
-              {#if editStep < 3}
+              {#if editStep < 5}
                 <button class="btn-save" on:click={() => editStep++}>Next</button>
               {:else}
                 <button class="btn-save" on:click={submitEditOrg} disabled={saving}>
@@ -736,7 +879,7 @@
         {/if}
 
         <div class="steps">
-          {#each ['Basic Info', 'Domains', 'Auth'] as step, i}
+          {#each ['Basic Info', 'Domains', 'Apps', 'User Groups', 'Auth'] as step, i}
             <span class="step" class:active={createStep === i + 1} class:done={createStep > i + 1}>
               {i + 1}. {step}
             </span>
@@ -805,8 +948,66 @@
             <button class="btn-add-sm" on:click={addCreateDomain}>+ Add Domain</button>
           </div>
 
-        <!-- Step 3: Auth -->
+        <!-- Step 3: Apps -->
         {:else if createStep === 3}
+          <div class="step-content">
+            <p class="muted">Define apps and assign domains to each app.</p>
+            {#each createApps as _, i}
+              <div class="app-config-card">
+                <div class="app-config-header">
+                  <label class="app-label">App ID
+                    <input bind:value={createApps[i].id} placeholder="my-app" />
+                  </label>
+                  {#if createApps.length > 1}
+                    <button class="btn-delete-sm" on:click={() => removeCreateApp(i)}>Remove app</button>
+                  {/if}
+                </div>
+                <div class="app-config-body">
+                  <div class="config-group">
+                    <h4>Domains</h4>
+                    {#if createDomains.filter(d => d.name.trim()).length === 0}
+                      <span class="muted">No domains configured yet. Add domains in the previous step.</span>
+                    {:else}
+                      {#each createDomains.filter(d => d.name.trim()) as domain}
+                        <label class="check-label">
+                          <input type="checkbox" checked={createApps[i].domains.includes(domain.name)} on:change={() => toggleAppDomain(createApps[i], domain.name)} /> {domain.name}
+                        </label>
+                      {/each}
+                    {/if}
+                  </div>
+                  <div class="config-group">
+                    <h4>Policies</h4>
+                    {#each createApps[i].policies as pol, pi}
+                      <div class="policy-card">
+                        <div class="policy-header">
+                          <span class="policy-name">{pol.name}</span>
+                          <span class="badge" class:badge-allow={pol.effect === 'Allow'} class:badge-deny={pol.effect === 'Deny'}>{pol.effect}</span>
+                          <button class="btn-delete-sm" on:click={() => removeCreateAppPolicy(i, pi)}>Remove</button>
+                        </div>
+                        {#each pol.rules as rule}
+                          <div class="policy-rule">
+                            <code>{rule.resource_type}: {rule.resource_value}</code>
+                            <span>{rule.methods.join(', ')}</span>
+                          </div>
+                        {/each}
+                      </div>
+                    {/each}
+                    <button class="btn-add-sm" on:click={() => { policyTarget = `app:${createApps[i].id}`; showWizardPolicyForm = true; }}>+ Add Policy</button>
+                  </div>
+                </div>
+              </div>
+            {/each}
+            <button class="btn-add-sm" on:click={addCreateApp}>+ Add App</button>
+          </div>
+
+        <!-- Step 4: User Groups (placeholder) -->
+        {:else if createStep === 4}
+          <div class="step-content">
+            <p class="muted">User Groups configuration coming soon.</p>
+          </div>
+
+        <!-- Step 5: Auth -->
+        {:else if createStep === 5}
           <div class="step-content">
             <label>JWT Issuer <input bind:value={jwtIssuer} placeholder="https://auth.example.com" /></label>
             <label>JWT Audience <input bind:value={jwtAudience} placeholder="quicguard-proxy" /></label>
@@ -895,7 +1096,7 @@
           {#if createStep > 1}
             <button class="btn-cancel" on:click={() => createStep--}>Back</button>
           {/if}
-          {#if createStep < 3}
+          {#if createStep < 5}
             <button class="btn-save" on:click={() => createStep++}>Next</button>
           {:else}
             <button class="btn-create" on:click={submitCreateOrg} disabled={creating}>
@@ -1002,6 +1203,12 @@
   .domain-config-body { padding: 0.6rem 0.8rem; }
   .config-group { margin-bottom: 0.6rem; padding-bottom: 0.4rem; }
   .config-group h4 { margin: 0.3rem 0; color: #555; }
+
+  /* App config card (wizard) */
+  .app-config-card { background: #f8f9fa; border: 1px solid #ddd; border-radius: 6px; margin: 0.6rem 0; }
+  .app-config-header { display: flex; justify-content: space-between; align-items: flex-end; padding: 0.6rem 0.8rem; background: #f0f0f0; border-radius: 6px 6px 0 0; }
+  .app-label { margin: 0; font-weight: 600; }
+  .app-config-body { padding: 0.6rem 0.8rem; }
 
   /* Policy cards */
   .policy-card { background: #f8f9fa; border: 1px solid #eee; border-radius: 6px; padding: 0.8rem; margin: 0.5rem 0; }
