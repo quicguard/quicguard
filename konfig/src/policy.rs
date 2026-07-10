@@ -110,6 +110,7 @@ impl Condition {
         let claim_value = match self.claim.as_str() {
             "sub" => Some(&claims.sub),
             "org_id" => Some(&claims.org_id),
+            "app" => Some(&claims.app),
             _ => None,
         };
 

@@ -332,10 +332,7 @@
   }
 
   function saveWizardPolicy() {
-    const target = editDomains ? editDomains : createDomains;
-    const entry = target.find(d => d.name === policyTarget);
-    if (!entry) return;
-    entry.policies = [...entry.policies, {
+    const policy = {
       policy_id: polId || `pol-${Date.now()}`,
       name: polName,
       effect: polEffect,
@@ -345,9 +342,24 @@
         methods: r.methods,
         conditions: r.conditions,
       })),
-    }];
-    editDomains = editDomains;
-    createDomains = createDomains;
+    };
+
+    if (policyTarget.startsWith('app:')) {
+      const appId = policyTarget.slice(4);
+      const apps = editApps.some(a => a.id === appId) ? editApps : createApps;
+      const entry = apps.find(a => a.id === appId);
+      if (!entry) return;
+      entry.policies = [...entry.policies, policy];
+      editApps = editApps;
+      createApps = createApps;
+    } else {
+      const target = editDomains ? editDomains : createDomains;
+      const entry = target.find(d => d.name === policyTarget);
+      if (!entry) return;
+      entry.policies = [...entry.policies, policy];
+      editDomains = editDomains;
+      createDomains = createDomains;
+    }
     polId = '';
     polName = '';
     polEffect = 'Allow';
