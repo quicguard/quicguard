@@ -100,7 +100,7 @@ impl TestContext {
 
     /// Generates a valid JWT token for a user.
     pub fn make_token(&self, user_id: &str, email: &str, role: &str) -> String {
-        dashboard::auth::create_token(user_id, email, role, &self.config).unwrap()
+        dashboard::auth::create_token(user_id, email, role, "", &self.config).unwrap()
     }
 
     /// Builds the full app router (without middleware — for unit tests that call handlers directly).

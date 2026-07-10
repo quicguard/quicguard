@@ -9,6 +9,8 @@ pub struct Claims {
     pub sub: String,
     pub email: String,
     pub role: String,
+    #[serde(default)]
+    pub app: String,
     pub exp: usize,
 }
 
@@ -24,6 +26,7 @@ pub fn create_token(
     user_id: &str,
     email: &str,
     role: &str,
+    app_id: &str,
     config: &Config,
 ) -> Result<String, jsonwebtoken::errors::Error> {
     let exp = chrono::Utc::now()
@@ -35,6 +38,7 @@ pub fn create_token(
         sub: user_id.to_string(),
         email: email.to_string(),
         role: role.to_string(),
+        app: app_id.to_string(),
         exp,
     };
 

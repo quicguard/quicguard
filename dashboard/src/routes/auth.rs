@@ -113,7 +113,7 @@ async fn login(
     }
 
     tracing::debug!(user_id = %user.id, role = %user.role, "Generating JWT token");
-    let token = create_token(&user.id.to_string(), &user.email, &user.role, &config)
+    let token = create_token(&user.id.to_string(), &user.email, &user.role, "", &config)
         .map_err(|e| {
             tracing::error!(user_id = %user.id, error = %e, "Failed to create JWT token");
             StatusCode::INTERNAL_SERVER_ERROR
