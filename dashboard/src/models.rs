@@ -52,6 +52,21 @@ pub struct DomainInput {
     pub policies: Vec<AddPolicy>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AppInput {
+    pub domains: Vec<String>,
+    #[serde(default)]
+    pub policies: Vec<AddPolicy>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UserGroupInput {
+    #[serde(default)]
+    pub emails: Vec<String>,
+    #[serde(default)]
+    pub email_patterns: Vec<String>,
+}
+
 // --- Structured org creation ---
 
 #[derive(Debug, Deserialize)]
@@ -59,6 +74,12 @@ pub struct CreateOrganization {
     pub id: String,
     pub name: String,
     pub domains: HashMap<String, DomainInput>,
+    #[serde(default)]
+    pub apps: HashMap<String, AppInput>,
+    #[serde(default)]
+    pub user_groups: HashMap<String, UserGroupInput>,
+    #[serde(default)]
+    pub app_user_groups: HashMap<String, Vec<String>>,
     // Auth (shared across all domains)
     pub jwt_issuer: String,
     pub jwt_audience: String,
@@ -67,12 +88,20 @@ pub struct CreateOrganization {
     pub cookie_name: Option<String>,
     pub redirect_url: Option<String>,
     pub idp_url: Option<String>,
+    pub req_param_name: Option<String>,
+    pub token_param_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateOrganization {
     pub name: Option<String>,
     pub domains: Option<HashMap<String, DomainInput>>,
+    #[serde(default)]
+    pub apps: Option<HashMap<String, AppInput>>,
+    #[serde(default)]
+    pub user_groups: Option<HashMap<String, UserGroupInput>>,
+    #[serde(default)]
+    pub app_user_groups: Option<HashMap<String, Vec<String>>>,
     // Auth fields
     pub jwt_issuer: Option<String>,
     pub jwt_audience: Option<String>,
@@ -81,6 +110,8 @@ pub struct UpdateOrganization {
     pub cookie_name: Option<String>,
     pub redirect_url: Option<String>,
     pub idp_url: Option<String>,
+    pub req_param_name: Option<String>,
+    pub token_param_name: Option<String>,
 }
 
 // --- Policy management ---
