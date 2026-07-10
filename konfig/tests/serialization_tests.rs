@@ -246,6 +246,7 @@ fn test_token_claims_serialization() {
     let claims = TokenClaims {
         sub: "user1".to_string(),
         org_id: "org1".to_string(),
+        app: "app1".to_string(),
         roles: vec!["admin".to_string()],
         permissions: vec!["read".to_string(), "write".to_string()],
         iss: Some("https://auth.example.com".to_string()),

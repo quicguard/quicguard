@@ -84,6 +84,7 @@ fn make_claims(sub: &str, org_id: &str) -> TokenClaims {
     TokenClaims {
         sub: sub.to_string(),
         org_id: org_id.to_string(),
+        app: String::new(),
         roles: vec!["user".to_string()],
         permissions: vec!["read".to_string()],
         iss: Some("https://auth.quicguard.dev".to_string()),

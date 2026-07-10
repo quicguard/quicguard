@@ -6,6 +6,7 @@ fn test_claims(sub: &str, org_id: &str) -> TokenClaims {
     TokenClaims {
         sub: sub.to_string(),
         org_id: org_id.to_string(),
+        app: String::new(),
         roles: vec![],
         permissions: vec![],
         iss: None,

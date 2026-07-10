@@ -70,6 +70,8 @@ pub struct TokenClaims {
     pub sub: String,
     pub org_id: String,
     #[serde(default)]
+    pub app: String,
+    #[serde(default)]
     pub roles: Vec<String>,
     #[serde(default)]
     pub permissions: Vec<String>,
