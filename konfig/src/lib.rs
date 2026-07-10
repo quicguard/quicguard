@@ -231,7 +231,7 @@ pub fn evaluate_policies(
     let mut total_policies = 0;
 
     for app in org.apps.values() {
-        if app.domains.contains(&domain.to_string()) {
+        if app.domains.iter().any(|d| d == domain) {
             for policy in &app.policies {
                 total_policies += 1;
                 if policy.matches_request(method, path, claims) {
