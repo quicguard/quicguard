@@ -222,13 +222,11 @@ pub fn evaluate_policies(
     path: &str,
     claims: &TokenClaims,
 ) -> Result<(), ProxyError> {
-    let app_id = if claims.app.is_empty() {
+    if claims.app.is_empty() {
         return Err(ProxyError::AccessDenied);
-    } else {
-        claims.app.clone()
-    };
+    }
 
-    let app = org.apps.get(&app_id).ok_or(ProxyError::AccessDenied)?;
+    let app = org.apps.get(&claims.app).ok_or(ProxyError::AccessDenied)?;
 
     if !app.domains.iter().any(|d| d == domain) {
         return Err(ProxyError::AccessDenied);
