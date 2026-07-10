@@ -38,7 +38,7 @@ fn build_org_config(input: &CreateOrganization) -> Result<Value, String> {
     tracing::debug!(org_id = %input.id, "Building org config from structured input");
 
     // JWT keys
-    let (jwt_public_key, _jwt_private_key) = if input.auto_generate_jwt_keys {
+    let (jwt_public_key, jwt_private_key) = if input.auto_generate_jwt_keys {
         tracing::debug!(org_id = %input.id, "Auto-generating JWT key pair");
         let keys = generate::generate_jwt_keys().map_err(|e| {
             tracing::error!(org_id = %input.id, error = %e, "Failed to generate JWT keys");
@@ -56,7 +56,7 @@ fn build_org_config(input: &CreateOrganization) -> Result<Value, String> {
     let redirect_url = input.redirect_url.clone().unwrap_or_default();
     let idp_url = input.idp_url.clone().unwrap_or_default();
 
-    // Build per-domain configs
+    // Build per-domain configs (upstream + TLS only, no policies)
     let mut domains = HashMap::new();
     for (domain_name, domain_input) in &input.domains {
         tracing::debug!(org_id = %input.id, domain = %domain_name, "Processing domain config");
@@ -82,13 +82,6 @@ fn build_org_config(input: &CreateOrganization) -> Result<Value, String> {
             )
         };
 
-        // Policies
-        let policies: Vec<Value> = domain_input
-            .policies
-            .iter()
-            .map(|p| build_policy_value(p))
-            .collect();
-
         let max_retries = domain_input.upstream_max_retries.unwrap_or(3);
 
         domains.insert(
@@ -103,12 +96,47 @@ fn build_org_config(input: &CreateOrganization) -> Result<Value, String> {
                     "cert_pem": cert,
                     "key_pem": key
                 },
+                "policies": []
+            }),
+        );
+    }
+
+    // Build apps section
+    let mut apps = HashMap::new();
+    for (app_name, app_input) in &input.apps {
+        let policies: Vec<Value> = app_input
+            .policies
+            .iter()
+            .map(|p| build_policy_value(p))
+            .collect();
+        apps.insert(
+            app_name.clone(),
+            json!({
+                "domains": app_input.domains,
                 "policies": policies
             }),
         );
     }
 
-    tracing::debug!(org_id = %input.id, domain_count = domains.len(),
+    // Build user_groups section
+    let mut user_groups = HashMap::new();
+    for (group_name, group_input) in &input.user_groups {
+        user_groups.insert(
+            group_name.clone(),
+            json!({
+                "emails": group_input.emails,
+                "email_patterns": group_input.email_patterns
+            }),
+        );
+    }
+
+    // Build app_user_groups section
+    let mut app_user_groups = HashMap::new();
+    for (app_name, group_names) in &input.app_user_groups {
+        app_user_groups.insert(app_name.clone(), json!(group_names));
+    }
+
+    tracing::debug!(org_id = %input.id, domain_count = domains.len(), app_count = apps.len(),
         jwt_issuer = %input.jwt_issuer, "Building final org config JSON");
 
     let config = json!({
@@ -118,11 +146,17 @@ fn build_org_config(input: &CreateOrganization) -> Result<Value, String> {
             "jwt_issuer": input.jwt_issuer,
             "jwt_audience": input.jwt_audience,
             "jwt_public_key": jwt_public_key,
+            "jwt_private_key": jwt_private_key,
             "cookie_name": cookie_name,
             "redirect_url": redirect_url,
-            "idp_url": idp_url
+            "idp_url": idp_url,
+            "req_param_name": input.req_param_name,
+            "token_param_name": input.token_param_name
         },
-        "domains": domains
+        "domains": domains,
+        "apps": apps,
+        "user_groups": user_groups,
+        "app_user_groups": app_user_groups
     });
 
     tracing::debug!(org_id = %input.id, config_size = config.to_string().len(),
@@ -137,7 +171,7 @@ fn build_update_config(
     let mut config = existing_config.clone();
     let config_obj = config.as_object_mut().ok_or("Config is not a JSON object")?;
 
-    // Update domains (merge per-domain)
+    // Update domains (merge per-domain: upstream + TLS only, no policies)
     if let Some(domains) = &input.domains {
         let existing_domains = config_obj
             .entry("domains".to_string())
@@ -185,16 +219,68 @@ fn build_update_config(
                     "key_pem": key
                 });
             }
+        }
+    }
 
-            // Update policies
-            if !domain_input.policies.is_empty() {
-                let policies: Vec<Value> = domain_input
-                    .policies
-                    .iter()
-                    .map(|p| build_policy_value(p))
-                    .collect();
-                domain_config["policies"] = json!(policies);
-            }
+    // Update apps (merge per-app)
+    if let Some(apps) = &input.apps {
+        let existing_apps = config_obj
+            .entry("apps".to_string())
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or("apps is not a JSON object")?;
+
+        for (app_name, app_input) in apps {
+            tracing::debug!(app = %app_name, "Merging app update");
+
+            let policies: Vec<Value> = app_input
+                .policies
+                .iter()
+                .map(|p| build_policy_value(p))
+                .collect();
+
+            existing_apps.insert(
+                app_name.clone(),
+                json!({
+                    "domains": app_input.domains,
+                    "policies": policies
+                }),
+            );
+        }
+    }
+
+    // Update user_groups (merge per-group)
+    if let Some(user_groups) = &input.user_groups {
+        let existing_groups = config_obj
+            .entry("user_groups".to_string())
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or("user_groups is not a JSON object")?;
+
+        for (group_name, group_input) in user_groups {
+            tracing::debug!(group = %group_name, "Merging user_group update");
+
+            existing_groups.insert(
+                group_name.clone(),
+                json!({
+                    "emails": group_input.emails,
+                    "email_patterns": group_input.email_patterns
+                }),
+            );
+        }
+    }
+
+    // Update app_user_groups (merge per-app)
+    if let Some(app_user_groups) = &input.app_user_groups {
+        let existing_aug = config_obj
+            .entry("app_user_groups".to_string())
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or("app_user_groups is not a JSON object")?;
+
+        for (app_name, group_names) in app_user_groups {
+            tracing::debug!(app = %app_name, "Merging app_user_groups update");
+            existing_aug.insert(app_name.clone(), json!(group_names));
         }
     }
 
@@ -215,6 +301,12 @@ fn build_update_config(
         if let Some(idp) = &input.idp_url {
             auth["idp_url"] = json!(idp);
         }
+        if let Some(req_param) = &input.req_param_name {
+            auth["req_param_name"] = json!(req_param);
+        }
+        if let Some(token_param) = &input.token_param_name {
+            auth["token_param_name"] = json!(token_param);
+        }
 
         // JWT key handling
         match input.auto_generate_jwt_keys {
@@ -224,6 +316,7 @@ fn build_update_config(
                     e.to_string()
                 })?;
                 auth["jwt_public_key"] = json!(keys.public_key);
+                auth["jwt_private_key"] = json!(keys.private_key);
             }
             Some(false) => {
                 if let Some(pub_key) = &input.jwt_public_key {
