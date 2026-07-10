@@ -75,8 +75,9 @@
   let editTokenParamName = 'token';
 
   // --- Per-domain policy form (in create/edit wizards) ---
-  let policyTarget = ''; // domain key within createDomains or editDomains
+  let policyTarget = ''; // domain key within createDomains or editDomains, or 'app:appId'
   let showWizardPolicyForm = false;
+  let editingPolicyIndex = -1; // -1 = adding new, >= 0 = editing existing
 
   function makeRule() {
     return { resourceType: 'prefix', resourceValue: '/', methods: ['GET'], conditions: [] };
@@ -96,7 +97,7 @@
 
   function makeAppEntry() {
     return {
-      id: '',
+      id: `app-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
       domains: [],
       policies: [],
     };
@@ -373,16 +374,15 @@
       const apps = editApps.some(a => a.id === appId) ? editApps : createApps;
       const entry = apps.find(a => a.id === appId);
       if (!entry) return;
-      entry.policies = [...entry.policies, policy];
+      if (editingPolicyIndex >= 0) {
+        // Edit existing policy
+        entry.policies[editingPolicyIndex] = policy;
+      } else {
+        // Add new policy
+        entry.policies = [...entry.policies, policy];
+      }
       editApps = editApps;
       createApps = createApps;
-    } else {
-      const target = editDomains ? editDomains : createDomains;
-      const entry = target.find(d => d.name === policyTarget);
-      if (!entry) return;
-      entry.policies = [...entry.policies, policy];
-      editDomains = editDomains;
-      createDomains = createDomains;
     }
     polId = '';
     polName = '';
@@ -390,6 +390,32 @@
     polRules = [makeRule()];
     showWizardPolicyForm = false;
     policyTarget = '';
+    editingPolicyIndex = -1;
+  }
+
+  function editWizardPolicy(appId, polIdx) {
+    const apps = editApps.some(a => a.id === appId) ? editApps : createApps;
+    const entry = apps.find(a => a.id === appId);
+    if (!entry) return;
+    const pol = entry.policies[polIdx];
+    if (!pol) return;
+
+    editingPolicyIndex = polIdx;
+    polId = pol.policy_id || pol.id || '';
+    polName = pol.name || '';
+    polEffect = pol.effect || 'Allow';
+    polRules = (pol.rules || []).map(r => ({
+      resourceType: r.resource_type || get_resource_type(r.resource),
+      resourceValue: r.resource_value || get_resource_value(r.resource),
+      methods: r.methods || [],
+      conditions: (r.conditions || []).map(c => ({
+        claim: c.claim || '',
+        operator: c.operator || 'Equals',
+        value: c.value || '',
+      })),
+    }));
+    policyTarget = `app:${appId}`;
+    showWizardPolicyForm = true;
   }
 
   function removeWizardPolicy(domainIdx, polIdx) {
@@ -917,7 +943,7 @@
                   <div class="app-config-card">
                     <div class="app-config-header">
                       <label class="app-label">App ID
-                        <input bind:value={editApps[i].id} placeholder="my-app" />
+                        <input bind:value={editApps[i].id} readonly />
                       </label>
                       {#if editApps.length > 1}
                         <button class="btn-delete-sm" on:click={() => removeEditApp(i)}>Remove app</button>
@@ -943,6 +969,7 @@
                             <div class="policy-header">
                               <span class="policy-name">{pol.name}</span>
                               <span class="badge" class:badge-allow={pol.effect === 'Allow'} class:badge-deny={pol.effect === 'Deny'}>{pol.effect}</span>
+                              <button class="btn-add-sm" on:click={() => editWizardPolicy(editApps[i].id, pi)}>Edit</button>
                               <button class="btn-delete-sm" on:click={() => removeEditAppPolicy(i, pi)}>Remove</button>
                             </div>
                             {#each pol.rules || [] as rule}
@@ -1114,7 +1141,7 @@
               <div class="app-config-card">
                 <div class="app-config-header">
                   <label class="app-label">App ID
-                    <input bind:value={createApps[i].id} placeholder="my-app" />
+                    <input bind:value={createApps[i].id} readonly />
                   </label>
                   {#if createApps.length > 1}
                     <button class="btn-delete-sm" on:click={() => removeCreateApp(i)}>Remove app</button>
@@ -1140,6 +1167,7 @@
                         <div class="policy-header">
                           <span class="policy-name">{pol.name}</span>
                           <span class="badge" class:badge-allow={pol.effect === 'Allow'} class:badge-deny={pol.effect === 'Deny'}>{pol.effect}</span>
+                          <button class="btn-add-sm" on:click={() => editWizardPolicy(createApps[i].id, pi)}>Edit</button>
                           <button class="btn-delete-sm" on:click={() => removeCreateAppPolicy(i, pi)}>Remove</button>
                         </div>
                         {#each pol.rules as rule}
@@ -1233,7 +1261,7 @@
         <!-- Wizard policy form (for both create and edit) -->
         {#if showWizardPolicyForm}
           <div class="policy-form card">
-            <h3>Add Policy to <code>{policyTarget}</code></h3>
+            <h3>{editingPolicyIndex >= 0 ? 'Edit' : 'Add'} Policy to <code>{policyTarget}</code></h3>
             <label>Policy ID <input bind:value={polId} placeholder="auto-generated if empty" /></label>
             <label>Name <input bind:value={polName} placeholder="e.g. Allow public read" required /></label>
             <label>Effect
@@ -1293,7 +1321,7 @@
 
             <div class="form-actions">
               <button class="btn-save" on:click={saveWizardPolicy}>Save Policy</button>
-              <button class="btn-cancel" on:click={() => { showWizardPolicyForm = false; policyTarget = ''; }}>Cancel</button>
+              <button class="btn-cancel" on:click={() => { showWizardPolicyForm = false; policyTarget = ''; editingPolicyIndex = -1; }}>Cancel</button>
             </div>
           </div>
         {/if}
