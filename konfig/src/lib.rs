@@ -222,24 +222,26 @@ pub fn evaluate_policies(
     path: &str,
     claims: &TokenClaims,
 ) -> Result<(), ProxyError> {
-    if !org.domains.contains_key(domain) {
-        return Err(ProxyError::OrganizationNotFound);
+    let app_id = if claims.app.is_empty() {
+        return Err(ProxyError::AccessDenied);
+    } else {
+        claims.app.clone()
+    };
+
+    let app = org.apps.get(&app_id).ok_or(ProxyError::AccessDenied)?;
+
+    if !app.domains.iter().any(|d| d == domain) {
+        return Err(ProxyError::AccessDenied);
     }
 
     let mut any_deny = false;
     let mut any_allow = false;
-    let mut total_policies = 0;
 
-    for app in org.apps.values() {
-        if app.domains.iter().any(|d| d == domain) {
-            for policy in &app.policies {
-                total_policies += 1;
-                if policy.matches_request(method, path, claims) {
-                    match policy.effect {
-                        PolicyEffect::Deny => any_deny = true,
-                        PolicyEffect::Allow => any_allow = true,
-                    }
-                }
+    for policy in &app.policies {
+        if policy.matches_request(method, path, claims) {
+            match policy.effect {
+                PolicyEffect::Deny => any_deny = true,
+                PolicyEffect::Allow => any_allow = true,
             }
         }
     }
@@ -247,9 +249,117 @@ pub fn evaluate_policies(
     if any_deny {
         return Err(ProxyError::AccessDenied);
     }
-    if any_allow || total_policies == 0 {
+    if any_allow || app.policies.is_empty() {
         Ok(())
     } else {
         Err(ProxyError::AccessDenied)
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::collections::HashSet;
+
+    fn make_app_org() -> Organization {
+        let mut apps = HashMap::new();
+        apps.insert(
+            "web-app".to_string(),
+            AppConfig {
+                domains: vec!["app.example.com".to_string()],
+                policies: vec![Policy {
+                    id: "pol-1".to_string(),
+                    name: "Allow GET".to_string(),
+                    effect: PolicyEffect::Allow,
+                    rules: vec![PolicyRule {
+                        resource: ResourcePattern::Prefix("/".to_string()),
+                        methods: HashSet::from([HttpMethod::Get]),
+                        conditions: vec![],
+                    }],
+                }],
+            },
+        );
+
+        Organization {
+            id: "org-test".to_string(),
+            name: "Test Org".to_string(),
+            domains: HashMap::new(),
+            apps,
+            user_groups: HashMap::new(),
+            app_user_groups: HashMap::new(),
+            auth: AuthConfig {
+                jwt_issuer: String::new(),
+                jwt_audience: String::new(),
+                jwks_url: String::new(),
+                jwt_public_key: String::new(),
+                jwt_private_key: String::new(),
+                cookie_name: "session_token".to_string(),
+                redirect_url: String::new(),
+                idp_url: String::new(),
+                req_param_name: "req".to_string(),
+                token_param_name: "token".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn test_evaluate_policies_with_valid_app() {
+        let org = make_app_org();
+        let claims = TokenClaims {
+            sub: "user-1".to_string(),
+            org_id: "org-test".to_string(),
+            app: "web-app".to_string(),
+            roles: vec![],
+            permissions: vec![],
+            iss: None,
+            aud: None,
+            exp: None,
+            iat: None,
+        };
+
+        let result =
+            evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/", &claims);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_evaluate_policies_with_invalid_app() {
+        let org = make_app_org();
+        let claims = TokenClaims {
+            sub: "user-1".to_string(),
+            org_id: "org-test".to_string(),
+            app: "nonexistent".to_string(),
+            roles: vec![],
+            permissions: vec![],
+            iss: None,
+            aud: None,
+            exp: None,
+            iat: None,
+        };
+
+        let result =
+            evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/", &claims);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_evaluate_policies_with_wrong_domain() {
+        let org = make_app_org();
+        let claims = TokenClaims {
+            sub: "user-1".to_string(),
+            org_id: "org-test".to_string(),
+            app: "web-app".to_string(),
+            roles: vec![],
+            permissions: vec![],
+            iss: None,
+            aud: None,
+            exp: None,
+            iat: None,
+        };
+
+        let result =
+            evaluate_policies(&org, "other.example.com", &HttpMethod::Get, "/", &claims);
+        assert!(result.is_err());
     }
 }

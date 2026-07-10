@@ -2,11 +2,11 @@ use std::collections::{HashMap, HashSet};
 
 use konfig::*;
 
-fn test_claims(sub: &str, org_id: &str) -> TokenClaims {
+fn test_claims(sub: &str, org_id: &str, app: &str) -> TokenClaims {
     TokenClaims {
         sub: sub.to_string(),
         org_id: org_id.to_string(),
-        app: String::new(),
+        app: app.to_string(),
         roles: vec![],
         permissions: vec![],
         iss: None,
@@ -16,7 +16,25 @@ fn test_claims(sub: &str, org_id: &str) -> TokenClaims {
     }
 }
 
-fn test_org() -> Organization {
+fn test_org_with_app() -> Organization {
+    let mut apps = HashMap::new();
+    apps.insert(
+        "main".to_string(),
+        AppConfig {
+            domains: vec!["app.example.com".to_string()],
+            policies: vec![Policy {
+                id: "p1".to_string(),
+                name: "Allow GET".to_string(),
+                rules: vec![PolicyRule {
+                    resource: ResourcePattern::Prefix("/api/v1/".to_string()),
+                    methods: HashSet::from([HttpMethod::Get]),
+                    conditions: vec![],
+                }],
+                effect: PolicyEffect::Allow,
+            }],
+        },
+    );
+
     Organization {
         id: "org1".to_string(),
         name: "Test Org".to_string(),
@@ -31,7 +49,7 @@ fn test_org() -> Organization {
                 tls: TlsConfig::default(),
             },
         )]),
-        apps: HashMap::new(),
+        apps,
         user_groups: HashMap::new(),
         app_user_groups: HashMap::new(),
         auth: AuthConfig {
@@ -50,32 +68,17 @@ fn test_org() -> Organization {
 }
 
 #[test]
-fn test_evaluate_no_policies_allows_all() {
-    let org = test_org();
-    let claims = test_claims("user1", "org1");
+fn test_evaluate_empty_app_returns_error() {
+    let org = test_org_with_app();
+    let claims = test_claims("user1", "org1", "");
 
-    assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/api/v1/users", &claims).is_ok());
-    assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Post, "/api/v1/users", &claims).is_ok());
+    assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/api/v1/users", &claims).is_err());
 }
 
 #[test]
 fn test_evaluate_general_allow_policy() {
-    let mut org = test_org();
-    org.apps.insert("main".to_string(), AppConfig {
-        domains: vec!["app.example.com".to_string()],
-        policies: vec![Policy {
-            id: "p1".to_string(),
-            name: "Allow GET".to_string(),
-            rules: vec![PolicyRule {
-                resource: ResourcePattern::Prefix("/api/v1/".to_string()),
-                methods: HashSet::from([HttpMethod::Get]),
-                conditions: vec![],
-            }],
-            effect: PolicyEffect::Allow,
-        }],
-    });
-
-    let claims = test_claims("user1", "org1");
+    let org = test_org_with_app();
+    let claims = test_claims("user1", "org1", "main");
 
     assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/api/v1/users", &claims).is_ok());
     assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Post, "/api/v1/users", &claims).is_err());
@@ -83,7 +86,7 @@ fn test_evaluate_general_allow_policy() {
 
 #[test]
 fn test_evaluate_general_deny_blocks_matching() {
-    let mut org = test_org();
+    let mut org = test_org_with_app();
     org.apps.insert("main".to_string(), AppConfig {
         domains: vec!["app.example.com".to_string()],
         policies: vec![Policy {
@@ -98,7 +101,7 @@ fn test_evaluate_general_deny_blocks_matching() {
         }],
     });
 
-    let claims = test_claims("user1", "org1");
+    let claims = test_claims("user1", "org1", "main");
 
     assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Delete, "/api/v1/users", &claims).is_err());
     assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/api/v1/users", &claims).is_err());
@@ -106,7 +109,7 @@ fn test_evaluate_general_deny_blocks_matching() {
 
 #[test]
 fn test_evaluate_domain_specific_allow() {
-    let mut org = test_org();
+    let mut org = test_org_with_app();
     org.apps.insert("main".to_string(), AppConfig {
         domains: vec!["app.example.com".to_string()],
         policies: vec![Policy {
@@ -121,7 +124,7 @@ fn test_evaluate_domain_specific_allow() {
         }],
     });
 
-    let claims = test_claims("user1", "org1");
+    let claims = test_claims("user1", "org1", "main");
 
     assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/api/users", &claims).is_ok());
     assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Post, "/api/users", &claims).is_err());
@@ -129,7 +132,7 @@ fn test_evaluate_domain_specific_allow() {
 
 #[test]
 fn test_evaluate_domain_deny_blocks_even_if_allow_also_present() {
-    let mut org = test_org();
+    let mut org = test_org_with_app();
     org.apps.insert("main".to_string(), AppConfig {
         domains: vec!["app.example.com".to_string()],
         policies: vec![
@@ -156,7 +159,7 @@ fn test_evaluate_domain_deny_blocks_even_if_allow_also_present() {
         ],
     });
 
-    let claims = test_claims("user1", "org1");
+    let claims = test_claims("user1", "org1", "main");
 
     assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Delete, "/api/users", &claims).is_err());
     assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/api/users", &claims).is_ok());
@@ -164,15 +167,15 @@ fn test_evaluate_domain_deny_blocks_even_if_allow_also_present() {
 
 #[test]
 fn test_evaluate_domain_not_found_returns_error() {
-    let org = test_org();
-    let claims = test_claims("user1", "org1");
+    let org = test_org_with_app();
+    let claims = test_claims("user1", "org1", "main");
 
     assert!(evaluate_policies(&org, "unknown.example.com", &HttpMethod::Get, "/api/users", &claims).is_err());
 }
 
 #[test]
 fn test_evaluate_domain_policy_with_condition() {
-    let mut org = test_org();
+    let mut org = test_org_with_app();
     org.apps.insert("main".to_string(), AppConfig {
         domains: vec!["app.example.com".to_string()],
         policies: vec![Policy {
@@ -191,25 +194,30 @@ fn test_evaluate_domain_policy_with_condition() {
         }],
     });
 
-    let claims = test_claims("admin-user", "org1");
+    let claims = test_claims("admin-user", "org1", "main");
     assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/api/users", &claims).is_ok());
 
-    let claims = test_claims("regular-user", "org1");
+    let claims = test_claims("regular-user", "org1", "main");
     assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/api/users", &claims).is_err());
 }
 
 #[test]
-fn test_evaluate_empty_domain_policies_allows_all() {
-    let org = test_org();
+fn test_evaluate_no_policies_allows_all() {
+    let mut org = test_org_with_app();
+    org.apps.insert("main".to_string(), AppConfig {
+        domains: vec!["app.example.com".to_string()],
+        policies: vec![],
+    });
 
-    let claims = test_claims("user1", "org1");
+    let claims = test_claims("user1", "org1", "main");
 
-    assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/api/users", &claims).is_ok());
+    assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/api/v1/users", &claims).is_ok());
+    assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Post, "/api/v1/users", &claims).is_ok());
 }
 
 #[test]
 fn test_evaluate_complex_real_world_scenario() {
-    let mut org = test_org();
+    let mut org = test_org_with_app();
     org.domains.insert(
         "internal.example.com".to_string(),
         DomainConfig {
@@ -266,10 +274,11 @@ fn test_evaluate_complex_real_world_scenario() {
         }],
     });
 
-    let claims = test_claims("user1", "org1");
+    let main_claims = test_claims("user1", "org1", "main");
+    let internal_claims = test_claims("user1", "org1", "internal");
 
-    assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/api/public/data", &claims).is_ok());
-    assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/api/admin/users", &claims).is_err());
-    assert!(evaluate_policies(&org, "internal.example.com", &HttpMethod::Get, "/api/admin/users", &claims).is_ok());
-    assert!(evaluate_policies(&org, "internal.example.com", &HttpMethod::Delete, "/api/admin/users", &claims).is_err());
+    assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/api/public/data", &main_claims).is_ok());
+    assert!(evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/api/admin/users", &main_claims).is_err());
+    assert!(evaluate_policies(&org, "internal.example.com", &HttpMethod::Get, "/api/admin/users", &internal_claims).is_ok());
+    assert!(evaluate_policies(&org, "internal.example.com", &HttpMethod::Delete, "/api/admin/users", &internal_claims).is_err());
 }

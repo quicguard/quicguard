@@ -80,11 +80,11 @@ fn encode_jwt(claims: &TokenClaims) -> String {
     jsonwebtoken::encode(&header, &claims, &key).expect("failed to encode JWT")
 }
 
-fn make_claims(sub: &str, org_id: &str) -> TokenClaims {
+fn make_claims(sub: &str, org_id: &str, app: &str) -> TokenClaims {
     TokenClaims {
         sub: sub.to_string(),
         org_id: org_id.to_string(),
-        app: String::new(),
+        app: app.to_string(),
         roles: vec!["user".to_string()],
         permissions: vec!["read".to_string()],
         iss: Some("https://auth.quicguard.dev".to_string()),
@@ -214,7 +214,7 @@ async fn test_domain_lookup_after_reload() {
 #[test]
 fn test_jwt_valid_token() {
     let auth = make_auth_config("session_token");
-    let claims = make_claims("user1", "org1");
+    let claims = make_claims("user1", "org1", "main");
     let token = encode_jwt(&claims);
 
     let key = jsonwebtoken::DecodingKey::from_ed_pem(auth.jwt_public_key.as_bytes()).unwrap();
@@ -231,7 +231,7 @@ fn test_jwt_valid_token() {
 
 #[test]
 fn test_jwt_wrong_key() {
-    let claims = make_claims("user1", "org1");
+    let claims = make_claims("user1", "org1", "main");
     let token = encode_jwt(&claims);
 
     let wrong_key = jsonwebtoken::DecodingKey::from_ed_pem(
@@ -289,7 +289,7 @@ fn test_jwt_empty_token() {
 #[test]
 fn test_policy_evaluate_allow_read() {
     let org = make_sample_org("org1", "demo.localhost", "session_token");
-    let claims = make_claims("user1", "org1");
+    let claims = make_claims("user1", "org1", "main");
 
     assert!(evaluate_policies(&org, "demo.localhost", &HttpMethod::Get, "/api/users", &claims).is_ok());
     assert!(evaluate_policies(&org, "demo.localhost", &HttpMethod::Head, "/api/users", &claims).is_ok());
@@ -298,7 +298,7 @@ fn test_policy_evaluate_allow_read() {
 #[test]
 fn test_policy_evaluate_deny_post() {
     let org = make_sample_org("org1", "demo.localhost", "session_token");
-    let claims = make_claims("user1", "org1");
+    let claims = make_claims("user1", "org1", "main");
 
     assert!(evaluate_policies(&org, "demo.localhost", &HttpMethod::Post, "/api/users", &claims).is_err());
 }
@@ -306,7 +306,7 @@ fn test_policy_evaluate_deny_post() {
 #[test]
 fn test_policy_evaluate_deny_delete_admin() {
     let org = make_sample_org("org1", "demo.localhost", "session_token");
-    let claims = make_claims("user1", "org1");
+    let claims = make_claims("user1", "org1", "main");
 
     assert!(evaluate_policies(&org, "demo.localhost", &HttpMethod::Delete, "/api/admin/users", &claims).is_err());
 }
@@ -314,7 +314,7 @@ fn test_policy_evaluate_deny_delete_admin() {
 #[test]
 fn test_policy_evaluate_delete_non_admin_ok() {
     let org = make_sample_org("org1", "demo.localhost", "session_token");
-    let claims = make_claims("user1", "org1");
+    let claims = make_claims("user1", "org1", "main");
 
     // DELETE on /api/users is not covered by deny-delete (which targets /api/admin/)
     // and not covered by allow-read (which is GET/HEAD only), so no policy matches → denied
@@ -332,7 +332,7 @@ async fn test_full_flow_valid_cookie_allow() {
     let org = state.lookup_org("demo.localhost").await.unwrap();
 
     // 2. Generate a valid JWT and put it in a cookie
-    let claims = make_claims("user1", "org1");
+    let claims = make_claims("user1", "org1", "main");
     let token = encode_jwt(&claims);
     let cookie_header = format!("theme=dark; session_token={token}; lang=en");
 
@@ -377,7 +377,7 @@ async fn test_full_flow_valid_jwt_policy_denied() {
     let org = state.lookup_org("demo.localhost").await.unwrap();
 
     // Generate a valid JWT
-    let claims = make_claims("user1", "org1");
+    let claims = make_claims("user1", "org1", "main");
     let token = encode_jwt(&claims);
 
     let parsed_claims = validate_jwt(&token, &org.auth).unwrap();
