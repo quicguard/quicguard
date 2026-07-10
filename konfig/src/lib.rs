@@ -73,9 +73,12 @@ impl ProxyState {
                 jwt_audience: String::new(),
                 jwks_url: String::new(),
                 jwt_public_key: String::new(),
+                jwt_private_key: String::new(),
                 cookie_name: "session_token".to_string(),
                 redirect_url: String::new(),
                 idp_url: String::new(),
+                req_param_name: "req".to_string(),
+                token_param_name: "token".to_string(),
             },
             config_version: AtomicU64::new(0),
         }
@@ -219,16 +222,24 @@ pub fn evaluate_policies(
     path: &str,
     claims: &TokenClaims,
 ) -> Result<(), ProxyError> {
-    let domain_config = org.domains.get(domain).ok_or(ProxyError::OrganizationNotFound)?;
+    if !org.domains.contains_key(domain) {
+        return Err(ProxyError::OrganizationNotFound);
+    }
 
     let mut any_deny = false;
     let mut any_allow = false;
+    let mut total_policies = 0;
 
-    for policy in &domain_config.policies {
-        if policy.matches_request(method, path, claims) {
-            match policy.effect {
-                PolicyEffect::Deny => any_deny = true,
-                PolicyEffect::Allow => any_allow = true,
+    for app in org.apps.values() {
+        if app.domains.contains(&domain.to_string()) {
+            for policy in &app.policies {
+                total_policies += 1;
+                if policy.matches_request(method, path, claims) {
+                    match policy.effect {
+                        PolicyEffect::Deny => any_deny = true,
+                        PolicyEffect::Allow => any_allow = true,
+                    }
+                }
             }
         }
     }
@@ -236,7 +247,7 @@ pub fn evaluate_policies(
     if any_deny {
         return Err(ProxyError::AccessDenied);
     }
-    if any_allow || domain_config.policies.is_empty() {
+    if any_allow || total_policies == 0 {
         Ok(())
     } else {
         Err(ProxyError::AccessDenied)

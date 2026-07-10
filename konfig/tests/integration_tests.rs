@@ -15,9 +15,12 @@ fn make_auth_config(cookie_name: &str) -> AuthConfig {
         jwt_audience: "quicguard-proxy".to_string(),
         jwks_url: "https://auth.quicguard.dev/.well-known/jwks.json".to_string(),
         jwt_public_key: JWT_PUBLIC_KEY.to_string(),
+        jwt_private_key: String::new(),
         cookie_name: cookie_name.to_string(),
         redirect_url: "https://auth.quicguard.dev/login".to_string(),
         idp_url: "https://auth.quicguard.dev/idp".to_string(),
+        req_param_name: "req".to_string(),
+        token_param_name: "token".to_string(),
     }
 }
 
@@ -34,6 +37,12 @@ fn make_sample_org(org_id: &str, domain: &str, cookie_name: &str) -> Organizatio
                     max_retries: 3,
                 },
                 tls: TlsConfig::default(),
+            },
+        )]),
+        apps: HashMap::from([(
+            "main".to_string(),
+            AppConfig {
+                domains: vec![domain.to_string()],
                 policies: vec![
                     Policy {
                         id: "allow-read".to_string(),
@@ -58,6 +67,8 @@ fn make_sample_org(org_id: &str, domain: &str, cookie_name: &str) -> Organizatio
                 ],
             },
         )]),
+        user_groups: HashMap::new(),
+        app_user_groups: HashMap::new(),
         auth: make_auth_config(cookie_name),
     }
 }
@@ -431,7 +442,12 @@ fn test_config_from_json_roundtrip() {
                     "base_url": "http://127.0.0.1:1025",
                     "timeout_ms": 5000,
                     "max_retries": 3
-                },
+                }
+            }
+        },
+        "apps": {
+            "main": {
+                "domains": ["demo.localhost"],
                 "policies": [
                     {
                         "id": "allow-read",
@@ -475,7 +491,8 @@ fn test_config_from_json_roundtrip() {
     assert!(org.domains.contains_key("demo.localhost"));
     let domain_cfg = org.domains.get("demo.localhost").unwrap();
     assert_eq!(domain_cfg.upstream.base_url, "http://127.0.0.1:1025");
-    assert_eq!(domain_cfg.policies.len(), 2);
+    let app = org.apps.get("main").unwrap();
+    assert_eq!(app.policies.len(), 2);
     assert_eq!(org.auth.cookie_name, "session_token");
 
     // Verify it serializes back cleanly

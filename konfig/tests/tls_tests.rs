@@ -45,9 +45,12 @@ fn make_auth_config() -> AuthConfig {
         jwt_audience: String::new(),
         jwks_url: String::new(),
         jwt_public_key: String::new(),
+        jwt_private_key: String::new(),
         cookie_name: "session_token".to_string(),
         redirect_url: String::new(),
         idp_url: String::new(),
+        req_param_name: "req".to_string(),
+        token_param_name: "token".to_string(),
     }
 }
 
@@ -79,11 +82,13 @@ fn make_org_with_tls(org_id: &str, domain_tls: HashMap<String, TlsConfig>) -> Or
                     DomainConfig {
                         upstream: make_upstream(),
                         tls,
-                        policies: vec![],
                     },
                 )
             })
             .collect(),
+        apps: HashMap::new(),
+        user_groups: HashMap::new(),
+        app_user_groups: HashMap::new(),
         auth: make_auth_config(),
     }
 }
@@ -149,7 +154,6 @@ async fn test_org_with_multiple_domain_certs() {
                         cert_pem: CERT_A.to_string(),
                         key_pem: KEY_A.to_string(),
                     },
-                    policies: vec![],
                 },
             ),
             (
@@ -160,10 +164,12 @@ async fn test_org_with_multiple_domain_certs() {
                         cert_pem: CERT_B.to_string(),
                         key_pem: KEY_B.to_string(),
                     },
-                    policies: vec![],
                 },
             ),
         ]),
+        apps: HashMap::new(),
+        user_groups: HashMap::new(),
+        app_user_groups: HashMap::new(),
         auth: make_auth_config(),
     };
 
@@ -285,6 +291,7 @@ fn test_tls_config_deserialization_without_tls_field() {
     let tls = &org.domains["old.example.com"].tls;
     assert!(tls.cert_pem.is_empty());
     assert!(tls.key_pem.is_empty());
+    assert!(org.apps.is_empty());
 }
 
 #[tokio::test]
@@ -382,7 +389,6 @@ async fn test_new_domain_appears_after_reload() {
                         cert_pem: CERT_A.to_string(),
                         key_pem: KEY_A.to_string(),
                     },
-                    policies: vec![],
                 },
             ),
             (
@@ -393,10 +399,12 @@ async fn test_new_domain_appears_after_reload() {
                         cert_pem: CERT_B.to_string(),
                         key_pem: KEY_B.to_string(),
                     },
-                    policies: vec![],
                 },
             ),
         ]),
+        apps: HashMap::new(),
+        user_groups: HashMap::new(),
+        app_user_groups: HashMap::new(),
         auth: make_auth_config(),
     };
     state.reload_org("org-a", updated).await;

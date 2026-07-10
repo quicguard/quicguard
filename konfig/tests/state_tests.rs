@@ -9,9 +9,12 @@ fn default_auth() -> AuthConfig {
         jwt_audience: "proxy".to_string(),
         jwks_url: "https://auth.example.com/.well-known/jwks.json".to_string(),
         jwt_public_key: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAB8WW87geWYlziXa6h0b17GTogvEcdkCk+XWhrX/hS+Y=\n-----END PUBLIC KEY-----".to_string(),
+        jwt_private_key: String::new(),
         cookie_name: "session_token".to_string(),
         redirect_url: "https://auth.example.com/login".to_string(),
         idp_url: String::new(),
+        req_param_name: "req".to_string(),
+        token_param_name: "token".to_string(),
     }
 }
 
@@ -43,11 +46,13 @@ fn test_org(id: &str, domains: Vec<&str>) -> Organization {
                     DomainConfig {
                         upstream: default_upstream(),
                         tls: TlsConfig::default(),
-                        policies: vec![],
                     },
                 )
             })
             .collect(),
+        apps: HashMap::new(),
+        user_groups: HashMap::new(),
+        app_user_groups: HashMap::new(),
         auth: default_auth(),
     }
 }
@@ -137,9 +142,11 @@ async fn test_proxy_state_reload_updates_existing() {
             DomainConfig {
                 upstream: default_upstream(),
                 tls: TlsConfig::default(),
-                policies: vec![],
             },
         )]),
+        apps: HashMap::new(),
+        user_groups: HashMap::new(),
+        app_user_groups: HashMap::new(),
         auth: default_auth(),
     };
     state.reload_org("org1", updated_org).await;

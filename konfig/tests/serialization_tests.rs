@@ -19,6 +19,12 @@ fn test_config_serialization_roundtrip() {
                             max_retries: 3,
                         },
                         tls: TlsConfig::default(),
+                    },
+                )]),
+                apps: HashMap::from([(
+                    "main".to_string(),
+                    AppConfig {
+                        domains: vec!["app.example.com".to_string()],
                         policies: vec![
                             Policy {
                                 id: "p1".to_string(),
@@ -47,14 +53,19 @@ fn test_config_serialization_roundtrip() {
                         ],
                     },
                 )]),
+                user_groups: HashMap::new(),
+                app_user_groups: HashMap::new(),
                 auth: AuthConfig {
                     jwt_issuer: "https://auth.example.com".to_string(),
                     jwt_audience: "proxy".to_string(),
                     jwks_url: "https://auth.example.com/.well-known/jwks.json".to_string(),
                     jwt_public_key: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAB8WW87geWYlziXa6h0b17GTogvEcdkCk+XWhrX/hS+Y=\n-----END PUBLIC KEY-----".to_string(),
+                    jwt_private_key: String::new(),
                     cookie_name: "session_token".to_string(),
                     redirect_url: "https://auth.example.com/login".to_string(),
                     idp_url: String::new(),
+                    req_param_name: "req".to_string(),
+                    token_param_name: "token".to_string(),
                 },
             },
         )]),
@@ -67,10 +78,10 @@ fn test_config_serialization_roundtrip() {
     let org = deserialized.organizations.get("org1").unwrap();
     assert_eq!(org.name, "Test Org");
     assert_eq!(org.domains.len(), 1);
-    let domain_cfg = org.domains.get("app.example.com").unwrap();
-    assert_eq!(domain_cfg.policies.len(), 2);
-    assert_eq!(domain_cfg.policies[0].id, "p1");
-    assert_eq!(domain_cfg.policies[1].id, "dp1");
+    let app = org.apps.get("main").unwrap();
+    assert_eq!(app.policies.len(), 2);
+    assert_eq!(app.policies[0].id, "p1");
+    assert_eq!(app.policies[1].id, "dp1");
 }
 
 #[test]
@@ -98,10 +109,12 @@ fn test_organization_serialization_with_defaults() {
     assert_eq!(org.id, "org1");
     assert_eq!(org.domains.len(), 1);
     let domain_cfg = org.domains.get("app.example.com").unwrap();
-    assert!(domain_cfg.policies.is_empty());
     assert!(domain_cfg.tls.cert_pem.is_empty());
     assert!(domain_cfg.upstream.max_retries == 3);
     assert_eq!(org.auth.cookie_name, "session_token");
+    assert!(org.apps.is_empty());
+    assert!(org.user_groups.is_empty());
+    assert!(org.app_user_groups.is_empty());
 }
 
 #[test]
@@ -280,7 +293,23 @@ fn test_complex_organization_json() {
                 "tls": {
                     "cert_pem": "CERT_APP",
                     "key_pem": "KEY_APP"
+                }
+            },
+            "api.acme.com": {
+                "upstream": {
+                    "base_url": "https://backend.acme.com",
+                    "timeout_ms": 10000,
+                    "max_retries": 5
                 },
+                "tls": {
+                    "cert_pem": "CERT_API",
+                    "key_pem": "KEY_API"
+                }
+            }
+        },
+        "apps": {
+            "web-app": {
+                "domains": ["app.acme.com"],
                 "policies": [
                     {
                         "id": "general-read",
@@ -296,16 +325,8 @@ fn test_complex_organization_json() {
                     }
                 ]
             },
-            "api.acme.com": {
-                "upstream": {
-                    "base_url": "https://backend.acme.com",
-                    "timeout_ms": 10000,
-                    "max_retries": 5
-                },
-                "tls": {
-                    "cert_pem": "CERT_API",
-                    "key_pem": "KEY_API"
-                },
+            "api-app": {
+                "domains": ["api.acme.com"],
                 "policies": [
                     {
                         "id": "api-deny-delete",
@@ -335,8 +356,9 @@ fn test_complex_organization_json() {
 
     assert_eq!(org.id, "org123");
     assert_eq!(org.domains.len(), 2);
-    assert_eq!(org.domains["app.acme.com"].policies.len(), 1);
-    assert_eq!(org.domains["api.acme.com"].policies.len(), 1);
+    assert_eq!(org.apps.len(), 2);
+    assert_eq!(org.apps["web-app"].policies.len(), 1);
+    assert_eq!(org.apps["api-app"].policies.len(), 1);
     assert_eq!(org.domains["app.acme.com"].upstream.max_retries, 5);
     assert_eq!(org.auth.cookie_name, "acme_session");
 }
