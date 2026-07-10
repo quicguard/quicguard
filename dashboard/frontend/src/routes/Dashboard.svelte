@@ -198,6 +198,9 @@
     idpUrl = '';
     reqParamName = 'req';
     tokenParamName = 'token';
+    showWizardPolicyForm = false;
+    policyTarget = '';
+    editingPolicyIndex = -1;
   }
 
   function addCreateDomain() {
@@ -942,9 +945,7 @@
                 {#each editApps as _, i}
                   <div class="app-config-card">
                     <div class="app-config-header">
-                      <label class="app-label">App ID
-                        <input bind:value={editApps[i].id} readonly />
-                      </label>
+                      <span class="app-label">App ID: <code>{editApps[i].id}</code></span>
                       {#if editApps.length > 1}
                         <button class="btn-delete-sm" on:click={() => removeEditApp(i)}>Remove app</button>
                       {/if}
@@ -1058,6 +1059,74 @@
               </div>
             {/if}
 
+            <!-- Wizard policy form (for edit) -->
+            {#if showWizardPolicyForm}
+              <div class="policy-form card">
+                <h3>{editingPolicyIndex >= 0 ? 'Edit' : 'Add'} Policy to <code>{policyTarget}</code></h3>
+                <label>Policy ID <input bind:value={polId} placeholder="auto-generated if empty" /></label>
+                <label>Name <input bind:value={polName} placeholder="e.g. Allow public read" required /></label>
+                <label>Effect
+                  <select bind:value={polEffect}>
+                    <option value="Allow">Allow</option>
+                    <option value="Deny">Deny</option>
+                  </select>
+                </label>
+
+                <h4>Rules</h4>
+                {#each polRules as rule, ri}
+                  <div class="rule-card">
+                    <label>Resource Type
+                      <select bind:value={rule.resourceType}>
+                        <option value="prefix">Prefix</option>
+                        <option value="exact">Exact</option>
+                        <option value="glob">Glob</option>
+                      </select>
+                    </label>
+                    <label>Resource Value <input bind:value={rule.resourceValue} placeholder="/api/v1/" /></label>
+                    <label>Methods
+                      <div class="method-checks">
+                        {#each ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] as m}
+                          <label class="check-label">
+                            <input type="checkbox" checked={rule.methods.includes(m)} on:change={() => toggleMethod(rule, m)} /> {m}
+                          </label>
+                        {/each}
+                      </div>
+                    </label>
+
+                    <div class="conditions">
+                      <span>Conditions:</span>
+                      {#each rule.conditions as cond, ci}
+                        <div class="condition-row">
+                          <input bind:value={cond.claim} placeholder="claim" />
+                          <select bind:value={cond.operator}>
+                            <option value="Equals">Equals</option>
+                            <option value="NotEquals">NotEquals</option>
+                            <option value="Contains">Contains</option>
+                            <option value="StartsWith">StartsWith</option>
+                            <option value="In">In</option>
+                            <option value="NotIn">NotIn</option>
+                          </select>
+                          <input bind:value={cond.value} placeholder="value" />
+                          <button class="btn-delete-sm" on:click={() => removeCondition(ri, ci)}>x</button>
+                        </div>
+                      {/each}
+                      <button class="btn-add-sm" on:click={() => addCondition(ri)}>+ Condition</button>
+                    </div>
+
+                    {#if polRules.length > 1}
+                      <button class="btn-delete-sm" on:click={() => removePolicyRule(ri)}>Remove rule</button>
+                    {/if}
+                  </div>
+                {/each}
+                <button class="btn-add-sm" on:click={addPolicyRule}>+ Add Rule</button>
+
+                <div class="form-actions">
+                  <button class="btn-save" on:click={saveWizardPolicy}>Save Policy</button>
+                  <button class="btn-cancel" on:click={() => { showWizardPolicyForm = false; policyTarget = ''; editingPolicyIndex = -1; }}>Cancel</button>
+                </div>
+              </div>
+            {/if}
+
             <div class="wizard-nav">
               {#if editStep > 1}
                 <button class="btn-cancel" on:click={() => editStep--}>Back</button>
@@ -1140,9 +1209,7 @@
             {#each createApps as _, i}
               <div class="app-config-card">
                 <div class="app-config-header">
-                  <label class="app-label">App ID
-                    <input bind:value={createApps[i].id} readonly />
-                  </label>
+                  <span class="app-label">App ID: <code>{createApps[i].id}</code></span>
                   {#if createApps.length > 1}
                     <button class="btn-delete-sm" on:click={() => removeCreateApp(i)}>Remove app</button>
                   {/if}
@@ -1185,6 +1252,74 @@
             {/each}
             <button class="btn-add-sm" on:click={addCreateApp}>+ Add App</button>
           </div>
+
+          <!-- Wizard policy form (for create) -->
+          {#if showWizardPolicyForm}
+            <div class="policy-form card">
+              <h3>{editingPolicyIndex >= 0 ? 'Edit' : 'Add'} Policy to <code>{policyTarget}</code></h3>
+              <label>Policy ID <input bind:value={polId} placeholder="auto-generated if empty" /></label>
+              <label>Name <input bind:value={polName} placeholder="e.g. Allow public read" required /></label>
+              <label>Effect
+                <select bind:value={polEffect}>
+                  <option value="Allow">Allow</option>
+                  <option value="Deny">Deny</option>
+                </select>
+              </label>
+
+              <h4>Rules</h4>
+              {#each polRules as rule, ri}
+                <div class="rule-card">
+                  <label>Resource Type
+                    <select bind:value={rule.resourceType}>
+                      <option value="prefix">Prefix</option>
+                      <option value="exact">Exact</option>
+                      <option value="glob">Glob</option>
+                    </select>
+                  </label>
+                  <label>Resource Value <input bind:value={rule.resourceValue} placeholder="/api/v1/" /></label>
+                  <label>Methods
+                    <div class="method-checks">
+                      {#each ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] as m}
+                        <label class="check-label">
+                          <input type="checkbox" checked={rule.methods.includes(m)} on:change={() => toggleMethod(rule, m)} /> {m}
+                        </label>
+                      {/each}
+                    </div>
+                  </label>
+
+                  <div class="conditions">
+                    <span>Conditions:</span>
+                    {#each rule.conditions as cond, ci}
+                      <div class="condition-row">
+                        <input bind:value={cond.claim} placeholder="claim" />
+                        <select bind:value={cond.operator}>
+                          <option value="Equals">Equals</option>
+                          <option value="NotEquals">NotEquals</option>
+                          <option value="Contains">Contains</option>
+                          <option value="StartsWith">StartsWith</option>
+                          <option value="In">In</option>
+                          <option value="NotIn">NotIn</option>
+                        </select>
+                        <input bind:value={cond.value} placeholder="value" />
+                        <button class="btn-delete-sm" on:click={() => removeCondition(ri, ci)}>x</button>
+                      </div>
+                    {/each}
+                    <button class="btn-add-sm" on:click={() => addCondition(ri)}>+ Condition</button>
+                  </div>
+
+                  {#if polRules.length > 1}
+                    <button class="btn-delete-sm" on:click={() => removePolicyRule(ri)}>Remove rule</button>
+                  {/if}
+                </div>
+              {/each}
+              <button class="btn-add-sm" on:click={addPolicyRule}>+ Add Rule</button>
+
+              <div class="form-actions">
+                <button class="btn-save" on:click={saveWizardPolicy}>Save Policy</button>
+                <button class="btn-cancel" on:click={() => { showWizardPolicyForm = false; policyTarget = ''; editingPolicyIndex = -1; }}>Cancel</button>
+              </div>
+            </div>
+          {/if}
 
         <!-- Step 4: User Groups -->
         {:else if createStep === 4}
@@ -1255,74 +1390,6 @@
             <label>IDP URL <input bind:value={idpUrl} placeholder="https://auth.example.com/idp" /></label>
             <label>Request Parameter Name <input bind:value={reqParamName} placeholder="req" /></label>
             <label>Token Parameter Name <input bind:value={tokenParamName} placeholder="token" /></label>
-          </div>
-        {/if}
-
-        <!-- Wizard policy form (for both create and edit) -->
-        {#if showWizardPolicyForm}
-          <div class="policy-form card">
-            <h3>{editingPolicyIndex >= 0 ? 'Edit' : 'Add'} Policy to <code>{policyTarget}</code></h3>
-            <label>Policy ID <input bind:value={polId} placeholder="auto-generated if empty" /></label>
-            <label>Name <input bind:value={polName} placeholder="e.g. Allow public read" required /></label>
-            <label>Effect
-              <select bind:value={polEffect}>
-                <option value="Allow">Allow</option>
-                <option value="Deny">Deny</option>
-              </select>
-            </label>
-
-            <h4>Rules</h4>
-            {#each polRules as rule, ri}
-              <div class="rule-card">
-                <label>Resource Type
-                  <select bind:value={rule.resourceType}>
-                    <option value="prefix">Prefix</option>
-                    <option value="exact">Exact</option>
-                    <option value="glob">Glob</option>
-                  </select>
-                </label>
-                <label>Resource Value <input bind:value={rule.resourceValue} placeholder="/api/v1/" /></label>
-                <label>Methods
-                  <div class="method-checks">
-                    {#each ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] as m}
-                      <label class="check-label">
-                        <input type="checkbox" checked={rule.methods.includes(m)} on:change={() => toggleMethod(rule, m)} /> {m}
-                      </label>
-                    {/each}
-                  </div>
-                </label>
-
-                <div class="conditions">
-                  <span>Conditions:</span>
-                  {#each rule.conditions as cond, ci}
-                    <div class="condition-row">
-                      <input bind:value={cond.claim} placeholder="claim" />
-                      <select bind:value={cond.operator}>
-                        <option value="Equals">Equals</option>
-                        <option value="NotEquals">NotEquals</option>
-                        <option value="Contains">Contains</option>
-                        <option value="StartsWith">StartsWith</option>
-                        <option value="In">In</option>
-                        <option value="NotIn">NotIn</option>
-                      </select>
-                      <input bind:value={cond.value} placeholder="value" />
-                      <button class="btn-delete-sm" on:click={() => removeCondition(ri, ci)}>x</button>
-                    </div>
-                  {/each}
-                  <button class="btn-add-sm" on:click={() => addCondition(ri)}>+ Condition</button>
-                </div>
-
-                {#if polRules.length > 1}
-                  <button class="btn-delete-sm" on:click={() => removePolicyRule(ri)}>Remove rule</button>
-                {/if}
-              </div>
-            {/each}
-            <button class="btn-add-sm" on:click={addPolicyRule}>+ Add Rule</button>
-
-            <div class="form-actions">
-              <button class="btn-save" on:click={saveWizardPolicy}>Save Policy</button>
-              <button class="btn-cancel" on:click={() => { showWizardPolicyForm = false; policyTarget = ''; editingPolicyIndex = -1; }}>Cancel</button>
-            </div>
           </div>
         {/if}
 
