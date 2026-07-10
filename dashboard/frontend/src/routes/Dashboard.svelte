@@ -162,6 +162,22 @@
     });
   }
 
+  function get_resource_type(resource) {
+    if (!resource) return 'prefix';
+    if (resource.Exact !== undefined) return 'exact';
+    if (resource.Prefix !== undefined) return 'prefix';
+    if (resource.Glob !== undefined) return 'glob';
+    return 'prefix';
+  }
+
+  function get_resource_value(resource) {
+    if (!resource) return '/';
+    if (resource.Exact !== undefined) return resource.Exact;
+    if (resource.Prefix !== undefined) return resource.Prefix;
+    if (resource.Glob !== undefined) return resource.Glob;
+    return '/';
+  }
+
   function openCreateWizard() {
     showCreateWizard = true;
     createStep = 1;
@@ -673,49 +689,6 @@
     await loadData();
   }
 
-  // --- Domain policies in detail view ---
-  let detailPolicyFormDomain = '';
-  let showDetailPolicyForm = false;
-
-  function openDetailPolicyForm(domain) {
-    detailPolicyFormDomain = domain;
-    showDetailPolicyForm = true;
-    polId = '';
-    polName = '';
-    polEffect = 'Allow';
-    polRules = [makeRule()];
-  }
-
-  async function addDetailPolicy() {
-    if (!selectedOrg || !detailPolicyFormDomain) return;
-    await api.orgs.addDomainPolicy(selectedOrg.id, detailPolicyFormDomain, {
-      policy_id: polId || `dpol-${Date.now()}`,
-      name: polName,
-      effect: polEffect,
-      rules: polRules.map(r => ({
-        resource_type: r.resourceType,
-        resource_value: r.resourceValue,
-        methods: r.methods,
-        conditions: r.conditions,
-      })),
-    });
-    polId = '';
-    polName = '';
-    polEffect = 'Allow';
-    polRules = [makeRule()];
-    showDetailPolicyForm = false;
-    detailPolicyFormDomain = '';
-    const res = await api.orgs.get(selectedOrg.id);
-    orgDetail = res;
-  }
-
-  async function removeDetailPolicy(domain, policyId) {
-    if (!selectedOrg) return;
-    await api.orgs.removeDomainPolicy(selectedOrg.id, domain, policyId);
-    const res = await api.orgs.get(selectedOrg.id);
-    orgDetail = res;
-  }
-
   function logout() {
     authStore.logout();
     push('/login');
@@ -785,8 +758,7 @@
                 <div class="domain-detail-header" role="button" tabindex="0" on:click={() => toggleDomainExpand(domainName)} on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggleDomainExpand(domainName); }}>
                   <span class="domain-detail-name">{domainName}</span>
                   <div class="domain-detail-meta">
-                    <span class="tag">{domainCfg.upstream_base_url || 'No upstream'}</span>
-                    <span class="badge">{domainCfg.policies?.length || 0} policies</span>
+                    <span class="tag">{domainCfg.upstream?.base_url || 'No upstream'}</span>
                     <span class="expand-icon">{expandedDomain === domainName ? '\u25B2' : '\u25BC'}</span>
                   </div>
                 </div>
@@ -795,34 +767,64 @@
                     <div class="detail-grid">
                       <div>
                         <h4>Upstream</h4>
-                        <p>URL: <code>{domainCfg.upstream_base_url || '-'}</code></p>
-                        <p>Timeout: {domainCfg.upstream_timeout_ms || '-'}ms</p>
+                        <p>URL: <code>{domainCfg.upstream?.base_url || '-'}</code></p>
+                        <p>Timeout: {domainCfg.upstream?.timeout_ms || '-'}ms</p>
                       </div>
                       <div>
                         <h4>TLS</h4>
-                        {#if domainCfg.auto_generate_tls}
-                          <p class="muted">Auto-generated certificate</p>
-                        {:else if domainCfg.cert_pem}
+                        {#if domainCfg.tls?.cert_pem}
                           <p>Certificate provided</p>
                         {:else}
                           <p class="muted">No certificate</p>
                         {/if}
                       </div>
                     </div>
+                  </div>
+                {/if}
+              </div>
+            {:else}
+              <span class="muted">No domains configured</span>
+            {/each}
+          </div>
+
+          <!-- Apps -->
+          <div class="detail-section">
+            <h3>Apps</h3>
+            {#each Object.entries(orgDetail.config.apps || {}) as [appId, appCfg]}
+              <div class="domain-detail-card">
+                <div class="domain-detail-header" role="button" tabindex="0" on:click={() => toggleDomainExpand(`app:${appId}`)} on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggleDomainExpand(`app:${appId}`); }}>
+                  <span class="domain-detail-name">{appId}</span>
+                  <div class="domain-detail-meta">
+                    <span class="tag">{appCfg.domains?.length || 0} domains</span>
+                    <span class="badge">{appCfg.policies?.length || 0} policies</span>
+                    <span class="expand-icon">{expandedDomain === `app:${appId}` ? '\u25B2' : '\u25BC'}</span>
+                  </div>
+                </div>
+                {#if expandedDomain === `app:${appId}`}
+                  <div class="domain-detail-body">
+                    <div class="detail-grid">
+                      <div>
+                        <h4>Domains</h4>
+                        {#each (appCfg.domains || []) as domain}
+                          <span class="tag">{domain}</span>
+                        {:else}
+                          <span class="muted">No domains</span>
+                        {/each}
+                      </div>
+                    </div>
 
                     <div class="domain-policies-section">
                       <h4>Policies</h4>
-                      {#each (domainCfg.policies || []) as pol}
+                      {#each (appCfg.policies || []) as pol}
                         <div class="policy-card">
                           <div class="policy-header">
                             <span class="policy-name">{pol.name}</span>
                             <span class="badge" class:badge-allow={pol.effect === 'Allow'} class:badge-deny={pol.effect === 'Deny'}>{pol.effect}</span>
-                            <button class="btn-delete-sm" on:click={() => removeDetailPolicy(domainName, pol.id)}>Remove</button>
                           </div>
-                          {#each pol.rules as rule}
+                          {#each pol.rules || [] as rule}
                             <div class="policy-rule">
-                              <code>{rule.resource_type}: {rule.resource_value}</code>
-                              <span>{rule.methods.join(', ')}</span>
+                              <code>{rule.resource_type || get_resource_type(rule.resource)}: {rule.resource_value || get_resource_value(rule.resource)}</code>
+                              <span>{rule.methods?.join(', ') || ''}</span>
                               {#if rule.conditions?.length}
                                 <span>Conditions: {rule.conditions.length}</span>
                               {/if}
@@ -832,13 +834,12 @@
                       {:else}
                         <span class="muted">No policies</span>
                       {/each}
-                      <button class="btn-create btn-sm" on:click={() => openDetailPolicyForm(domainName)}>+ Add Policy</button>
                     </div>
                   </div>
                 {/if}
               </div>
             {:else}
-              <span class="muted">No domains configured</span>
+              <span class="muted">No apps configured</span>
             {/each}
           </div>
 
@@ -853,74 +854,6 @@
             <p>Request Param: <code>{orgDetail.config.auth?.req_param_name || 'req'}</code></p>
             <p>Token Param: <code>{orgDetail.config.auth?.token_param_name || 'token'}</code></p>
           </div>
-
-          <!-- Detail policy form -->
-          {#if showDetailPolicyForm}
-            <div class="policy-form card">
-              <h3>Add Policy to <code>{detailPolicyFormDomain}</code></h3>
-              <label>Policy ID <input bind:value={polId} placeholder="auto-generated if empty" /></label>
-              <label>Name <input bind:value={polName} placeholder="e.g. Allow public read" required /></label>
-              <label>Effect
-                <select bind:value={polEffect}>
-                  <option value="Allow">Allow</option>
-                  <option value="Deny">Deny</option>
-                </select>
-              </label>
-
-              <h4>Rules</h4>
-              {#each polRules as rule, ri}
-                <div class="rule-card">
-                  <label>Resource Type
-                    <select bind:value={rule.resourceType}>
-                      <option value="prefix">Prefix</option>
-                      <option value="exact">Exact</option>
-                      <option value="glob">Glob</option>
-                    </select>
-                  </label>
-                  <label>Resource Value <input bind:value={rule.resourceValue} placeholder="/api/v1/" /></label>
-                  <label>Methods
-                    <div class="method-checks">
-                      {#each ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'] as m}
-                        <label class="check-label">
-                          <input type="checkbox" checked={rule.methods.includes(m)} on:change={() => toggleMethod(rule, m)} /> {m}
-                        </label>
-                      {/each}
-                    </div>
-                  </label>
-
-                  <div class="conditions">
-                    <span>Conditions:</span>
-                    {#each rule.conditions as cond, ci}
-                      <div class="condition-row">
-                        <input bind:value={cond.claim} placeholder="claim" />
-                        <select bind:value={cond.operator}>
-                          <option value="Equals">Equals</option>
-                          <option value="NotEquals">NotEquals</option>
-                          <option value="Contains">Contains</option>
-                          <option value="StartsWith">StartsWith</option>
-                          <option value="In">In</option>
-                          <option value="NotIn">NotIn</option>
-                        </select>
-                        <input bind:value={cond.value} placeholder="value" />
-                        <button class="btn-delete-sm" on:click={() => removeCondition(ri, ci)}>x</button>
-                      </div>
-                    {/each}
-                    <button class="btn-add-sm" on:click={() => addCondition(ri)}>+ Condition</button>
-                  </div>
-
-                  {#if polRules.length > 1}
-                    <button class="btn-delete-sm" on:click={() => removePolicyRule(ri)}>Remove rule</button>
-                  {/if}
-                </div>
-              {/each}
-              <button class="btn-add-sm" on:click={addPolicyRule}>+ Add Rule</button>
-
-              <div class="form-actions">
-                <button class="btn-save" on:click={addDetailPolicy}>Add Policy</button>
-                <button class="btn-cancel" on:click={() => { showDetailPolicyForm = false; detailPolicyFormDomain = ''; }}>Cancel</button>
-              </div>
-            </div>
-          {/if}
         {/if}
 
         <!-- Edit wizard -->
@@ -933,7 +866,7 @@
 
             <div class="steps">
               {#each ['Basic Info', 'Domains', 'Apps', 'User Groups', 'Auth'] as step, i}
-                <span class="step" class:active={editStep === i + 1} class:done={editStep > i + 1}>
+                <span class="step clickable" class:active={editStep === i + 1} class:done={editStep > i + 1} on:click={() => editStep = i + 1} on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') editStep = i + 1; }}>
                   {i + 1}. {step}
                 </span>
               {/each}
@@ -945,7 +878,7 @@
               </div>
             {:else if editStep === 2}
               <div class="step-content">
-                <p class="muted">Configure each domain's upstream, TLS, and policies.</p>
+                <p class="muted">Configure each domain's upstream and TLS.</p>
                 {#each editDomains as _, i}
                   <div class="domain-config-card">
                     <div class="domain-config-header">
@@ -971,25 +904,6 @@
                           <label>Certificate PEM <textarea bind:value={editDomains[i].tlsCertPem} rows="3" placeholder="-----BEGIN CERTIFICATE-----"></textarea></label>
                           <label>Private Key PEM <textarea bind:value={editDomains[i].tlsKeyPem} rows="3" placeholder="-----BEGIN PRIVATE KEY-----"></textarea></label>
                         {/if}
-                      </div>
-                      <div class="config-group">
-                        <h4>Policies</h4>
-                        {#each editDomains[i].policies as pol, pi}
-                          <div class="policy-card">
-                            <div class="policy-header">
-                              <span class="policy-name">{pol.name}</span>
-                              <span class="badge" class:badge-allow={pol.effect === 'Allow'} class:badge-deny={pol.effect === 'Deny'}>{pol.effect}</span>
-                              <button class="btn-delete-sm" on:click={() => removeEditWizardPolicy(i, pi)}>Remove</button>
-                            </div>
-                            {#each pol.rules as rule}
-                              <div class="policy-rule">
-                                <code>{rule.resource_type}: {rule.resource_value}</code>
-                                <span>{rule.methods.join(', ')}</span>
-                              </div>
-                            {/each}
-                          </div>
-                        {/each}
-                        <button class="btn-add-sm" on:click={() => { policyTarget = editDomains[i].name; showWizardPolicyForm = true; }}>+ Add Policy</button>
                       </div>
                     </div>
                   </div>
@@ -1031,10 +945,10 @@
                               <span class="badge" class:badge-allow={pol.effect === 'Allow'} class:badge-deny={pol.effect === 'Deny'}>{pol.effect}</span>
                               <button class="btn-delete-sm" on:click={() => removeEditAppPolicy(i, pi)}>Remove</button>
                             </div>
-                            {#each pol.rules as rule}
+                            {#each pol.rules || [] as rule}
                               <div class="policy-rule">
-                                <code>{rule.resource_type}: {rule.resource_value}</code>
-                                <span>{rule.methods.join(', ')}</span>
+                                <code>{rule.resource_type || get_resource_type(rule.resource)}: {rule.resource_value || get_resource_value(rule.resource)}</code>
+                                <span>{rule.methods?.join(', ') || ''}</span>
                               </div>
                             {/each}
                           </div>
@@ -1123,11 +1037,10 @@
               {/if}
               {#if editStep < 5}
                 <button class="btn-save" on:click={() => editStep++}>Next</button>
-              {:else}
-                <button class="btn-save" on:click={submitEditOrg} disabled={saving}>
-                  {saving ? 'Saving...' : 'Save Changes'}
-                </button>
               {/if}
+              <button class="btn-save" on:click={submitEditOrg} disabled={saving}>
+                {saving ? 'Saving...' : 'Save'}
+              </button>
               <button class="btn-cancel" on:click={cancelEdit}>Cancel</button>
             </div>
           </div>
@@ -1144,7 +1057,7 @@
 
         <div class="steps">
           {#each ['Basic Info', 'Domains', 'Apps', 'User Groups', 'Auth'] as step, i}
-            <span class="step" class:active={createStep === i + 1} class:done={createStep > i + 1}>
+            <span class="step clickable" class:active={createStep === i + 1} class:done={createStep > i + 1} on:click={() => createStep = i + 1} on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') createStep = i + 1; }}>
               {i + 1}. {step}
             </span>
           {/each}
@@ -1160,7 +1073,7 @@
         <!-- Step 2: Domains -->
         {:else if createStep === 2}
           <div class="step-content">
-            <p class="muted">Configure each domain's upstream, TLS, and policies.</p>
+            <p class="muted">Configure each domain's upstream and TLS.</p>
             {#each createDomains as _, i}
               <div class="domain-config-card">
                 <div class="domain-config-header">
@@ -1186,25 +1099,6 @@
                       <label>Certificate PEM <textarea bind:value={createDomains[i].tlsCertPem} rows="3" placeholder="-----BEGIN CERTIFICATE-----"></textarea></label>
                       <label>Private Key PEM <textarea bind:value={createDomains[i].tlsKeyPem} rows="3" placeholder="-----BEGIN PRIVATE KEY-----"></textarea></label>
                     {/if}
-                  </div>
-                  <div class="config-group">
-                    <h4>Policies</h4>
-                    {#each createDomains[i].policies as pol, pi}
-                      <div class="policy-card">
-                        <div class="policy-header">
-                          <span class="policy-name">{pol.name}</span>
-                          <span class="badge" class:badge-allow={pol.effect === 'Allow'} class:badge-deny={pol.effect === 'Deny'}>{pol.effect}</span>
-                          <button class="btn-delete-sm" on:click={() => removeWizardPolicy(i, pi)}>Remove</button>
-                        </div>
-                        {#each pol.rules as rule}
-                          <div class="policy-rule">
-                            <code>{rule.resource_type}: {rule.resource_value}</code>
-                            <span>{rule.methods.join(', ')}</span>
-                          </div>
-                        {/each}
-                      </div>
-                    {/each}
-                    <button class="btn-add-sm" on:click={() => { policyTarget = createDomains[i].name; showWizardPolicyForm = true; }}>+ Add Policy</button>
                   </div>
                 </div>
               </div>
@@ -1411,11 +1305,10 @@
           {/if}
           {#if createStep < 5}
             <button class="btn-save" on:click={() => createStep++}>Next</button>
-          {:else}
-            <button class="btn-create" on:click={submitCreateOrg} disabled={creating}>
-              {creating ? 'Creating...' : 'Create Organization'}
-            </button>
           {/if}
+          <button class="btn-create" on:click={submitCreateOrg} disabled={creating}>
+            {creating ? 'Creating...' : 'Create'}
+          </button>
           <button class="btn-cancel" on:click={() => showCreateWizard = false}>Cancel</button>
         </div>
       </section>
@@ -1555,6 +1448,8 @@
   /* Wizard */
   .steps { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; padding-bottom: 1rem; border-bottom: 1px solid #eee; }
   .step { padding: 0.4rem 0.8rem; border-radius: 20px; background: #f0f0f0; color: #888; font-size: 0.85rem; }
+  .step.clickable { cursor: pointer; transition: background 0.2s, color 0.2s; }
+  .step.clickable:hover { background: #e0e0e0; color: #555; }
   .step.active { background: #3498db; color: white; }
   .step.done { background: #27ae60; color: white; }
   .step-content { min-height: 200px; }
