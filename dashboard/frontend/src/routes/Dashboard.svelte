@@ -49,7 +49,6 @@
   let policyDomain = '';
 
   // Policy form fields
-  let polId = '';
   let polName = '';
   let polEffect = 'Allow';
   let polRules = [makeRule()];
@@ -361,7 +360,7 @@
 
   function saveWizardPolicy() {
     const policy = {
-      policy_id: polId || `pol-${Date.now()}`,
+      policy_id: `pol-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
       name: polName,
       effect: polEffect,
       rules: polRules.map(r => ({
@@ -378,7 +377,8 @@
       const entry = apps.find(a => a.id === appId);
       if (!entry) return;
       if (editingPolicyIndex >= 0) {
-        // Edit existing policy
+        // Edit existing policy - keep the original policy_id
+        policy.policy_id = entry.policies[editingPolicyIndex].policy_id || entry.policies[editingPolicyIndex].id || policy.policy_id;
         entry.policies[editingPolicyIndex] = policy;
       } else {
         // Add new policy
@@ -387,7 +387,6 @@
       editApps = editApps;
       createApps = createApps;
     }
-    polId = '';
     polName = '';
     polEffect = 'Allow';
     polRules = [makeRule()];
@@ -404,7 +403,6 @@
     if (!pol) return;
 
     editingPolicyIndex = polIdx;
-    polId = pol.policy_id || pol.id || '';
     polName = pol.name || '';
     polEffect = pol.effect || 'Allow';
     polRules = (pol.rules || []).map(r => ({
@@ -617,6 +615,12 @@
   function cancelEdit() {
     editingOrg = false;
     editError = '';
+    showWizardPolicyForm = false;
+    policyTarget = '';
+    editingPolicyIndex = -1;
+    polName = '';
+    polEffect = 'Allow';
+    polRules = [makeRule()];
   }
 
   function addEditDomain() {
@@ -981,7 +985,7 @@
                             {/each}
                           </div>
                         {/each}
-                        <button class="btn-add-sm" on:click={() => { policyTarget = `app:${editApps[i].id}`; showWizardPolicyForm = true; }}>+ Add Policy</button>
+                        <button class="btn-add-sm" on:click={() => { policyTarget = `app:${editApps[i].id}`; editingPolicyIndex = -1; polName = ''; polEffect = 'Allow'; polRules = [makeRule()]; showWizardPolicyForm = true; }}>+ Add Policy</button>
                       </div>
                     </div>
                   </div>
@@ -1063,7 +1067,6 @@
             {#if showWizardPolicyForm}
               <div class="policy-form card">
                 <h3>{editingPolicyIndex >= 0 ? 'Edit' : 'Add'} Policy to <code>{policyTarget}</code></h3>
-                <label>Policy ID <input bind:value={polId} placeholder="auto-generated if empty" /></label>
                 <label>Name <input bind:value={polName} placeholder="e.g. Allow public read" required /></label>
                 <label>Effect
                   <select bind:value={polEffect}>
@@ -1245,7 +1248,7 @@
                         {/each}
                       </div>
                     {/each}
-                    <button class="btn-add-sm" on:click={() => { policyTarget = `app:${createApps[i].id}`; showWizardPolicyForm = true; }}>+ Add Policy</button>
+                    <button class="btn-add-sm" on:click={() => { policyTarget = `app:${createApps[i].id}`; editingPolicyIndex = -1; polName = ''; polEffect = 'Allow'; polRules = [makeRule()]; showWizardPolicyForm = true; }}>+ Add Policy</button>
                   </div>
                 </div>
               </div>
@@ -1257,7 +1260,6 @@
           {#if showWizardPolicyForm}
             <div class="policy-form card">
               <h3>{editingPolicyIndex >= 0 ? 'Edit' : 'Add'} Policy to <code>{policyTarget}</code></h3>
-              <label>Policy ID <input bind:value={polId} placeholder="auto-generated if empty" /></label>
               <label>Name <input bind:value={polName} placeholder="e.g. Allow public read" required /></label>
               <label>Effect
                 <select bind:value={polEffect}>
