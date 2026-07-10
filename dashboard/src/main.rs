@@ -136,9 +136,12 @@ async fn main() -> anyhow::Result<()> {
         .layer(axum::middleware::from_fn_with_state(state.clone(), middleware::admin_only));
     let org_routes = routes::organizations::org_router()
         .layer(axum::middleware::from_fn_with_state(state.clone(), middleware::auth_middleware));
+    let protected_auth = routes::auth::protected_auth_router()
+        .layer(axum::middleware::from_fn_with_state(state.clone(), middleware::auth_middleware));
 
     let api_routes = axum::Router::new()
         .nest("/auth", routes::auth::auth_router())
+        .nest("/auth", protected_auth)
         .nest("/admin", admin_routes)
         .nest("/organizations", org_routes);
 

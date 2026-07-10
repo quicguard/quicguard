@@ -95,8 +95,7 @@ fn build_org_config(input: &CreateOrganization) -> Result<Value, String> {
                 "tls": {
                     "cert_pem": cert,
                     "key_pem": key
-                },
-                "policies": []
+                }
             }),
         );
     }

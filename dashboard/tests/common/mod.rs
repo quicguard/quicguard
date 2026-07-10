@@ -103,10 +103,20 @@ impl TestContext {
         dashboard::auth::create_token(user_id, email, role, "", &self.config).unwrap()
     }
 
-    /// Builds the full app router (without middleware — for unit tests that call handlers directly).
+    /// Builds the full app router with middleware matching production.
     pub fn app(&self) -> axum::Router {
         let state = (self.pool.clone(), self.config.clone());
+        let admin_routes = dashboard::routes::admin::admin_router()
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                dashboard::middleware::admin_only,
+            ));
         let org_routes = dashboard::routes::organizations::org_router()
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                dashboard::middleware::auth_middleware,
+            ));
+        let protected_auth = dashboard::routes::auth::protected_auth_router()
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 dashboard::middleware::auth_middleware,
@@ -116,7 +126,8 @@ impl TestContext {
                 "/api",
                 axum::Router::new()
                     .nest("/auth", dashboard::routes::auth::auth_router())
-                    .nest("/admin", dashboard::routes::admin::admin_router())
+                    .nest("/auth", protected_auth)
+                    .nest("/admin", admin_routes)
                     .nest("/organizations", org_routes),
             )
             .with_state(state)

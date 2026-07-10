@@ -154,11 +154,19 @@
   }
 
   // --- Create wizard helpers ---
+  function generateUUID() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+      const r = Math.random() * 16 | 0;
+      const v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  }
+
   function openCreateWizard() {
     showCreateWizard = true;
     createStep = 1;
     createError = '';
-    newId = '';
+    newId = generateUUID();
     newName = '';
     createDomains = [makeDomainEntry()];
     createApps = [makeAppEntry()];
@@ -389,7 +397,6 @@
           upstream_base_url: d.upstreamUrl.trim(),
           upstream_timeout_ms: d.upstreamTimeout,
           auto_generate_tls: d.autoGenerateTls,
-          policies: d.policies,
         };
       }
 
@@ -474,14 +481,16 @@
     editDomains = [];
     const domainObj = orgDetail.config.domains || {};
     for (const [domainName, domainCfg] of Object.entries(domainObj)) {
+      const upstream = domainCfg.upstream || {};
+      const tls = domainCfg.tls || {};
       editDomains.push({
         name: domainName,
-        upstreamUrl: domainCfg.upstream_base_url || '',
-        upstreamTimeout: domainCfg.upstream_timeout_ms || 5000,
-        autoGenerateTls: domainCfg.auto_generate_tls ?? true,
-        tlsCertPem: domainCfg.cert_pem || '',
-        tlsKeyPem: domainCfg.key_pem || '',
-        policies: domainCfg.policies || [],
+        upstreamUrl: upstream.base_url || '',
+        upstreamTimeout: upstream.timeout_ms || 5000,
+        autoGenerateTls: tls.cert_pem ? false : true,
+        tlsCertPem: tls.cert_pem || '',
+        tlsKeyPem: tls.key_pem || '',
+        policies: [],
       });
     }
     if (editDomains.length === 0) editDomains = [makeDomainEntry()];
@@ -490,10 +499,46 @@
     editApps = [];
     const appsObj = orgDetail.config.apps || {};
     for (const [appId, appCfg] of Object.entries(appsObj)) {
+      // Convert policies from Redis format to edit format
+      const policies = (appCfg.policies || []).map(pol => ({
+        policy_id: pol.id || pol.policy_id || '',
+        name: pol.name || '',
+        effect: pol.effect || 'Allow',
+        rules: (pol.rules || []).map(rule => {
+          // Convert resource from {Prefix: "/"} format to resource_type/resource_value
+          let resourceType = 'prefix';
+          let resourceValue = '/';
+          if (rule.resource) {
+            if (rule.resource.Exact !== undefined) {
+              resourceType = 'exact';
+              resourceValue = rule.resource.Exact;
+            } else if (rule.resource.Prefix !== undefined) {
+              resourceType = 'prefix';
+              resourceValue = rule.resource.Prefix;
+            } else if (rule.resource.Glob !== undefined) {
+              resourceType = 'glob';
+              resourceValue = rule.resource.Glob;
+            }
+          } else if (rule.resource_type) {
+            resourceType = rule.resource_type;
+            resourceValue = rule.resource_value || '/';
+          }
+          return {
+            resource_type: resourceType,
+            resource_value: resourceValue,
+            methods: rule.methods || [],
+            conditions: (rule.conditions || []).map(c => ({
+              claim: c.claim || '',
+              operator: c.operator || 'Equals',
+              value: c.value || '',
+            })),
+          };
+        }),
+      }));
       editApps.push({
         id: appId,
         domains: appCfg.domains || [],
-        policies: appCfg.policies || [],
+        policies: policies,
       });
     }
     if (editApps.length === 0) editApps = [makeAppEntry()];
@@ -570,7 +615,6 @@
           upstream_base_url: d.upstreamUrl.trim(),
           upstream_timeout_ms: d.upstreamTimeout,
           auto_generate_tls: d.autoGenerateTls,
-          policies: d.policies,
         };
       }
 
@@ -1109,7 +1153,7 @@
         <!-- Step 1: Basic Info -->
         {#if createStep === 1}
           <div class="step-content">
-            <label>Org ID <input bind:value={newId} placeholder="my-org" required /></label>
+            <label>Org ID <input bind:value={newId} placeholder="auto-generated" readonly /></label>
             <label>Name <input bind:value={newName} placeholder="My Organization" required /></label>
           </div>
 

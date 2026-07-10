@@ -48,8 +48,6 @@ pub struct DomainInput {
     pub cert_pem: Option<String>,
     pub key_pem: Option<String>,
     pub auto_generate_tls: bool,
-    #[serde(default)]
-    pub policies: Vec<AddPolicy>,
 }
 
 #[derive(Debug, Deserialize)]

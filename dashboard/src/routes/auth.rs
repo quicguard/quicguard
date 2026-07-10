@@ -17,6 +17,10 @@ pub fn auth_router() -> Router<(DbPool, Config)> {
     Router::new()
         .route("/signup", axum::routing::post(signup))
         .route("/login", axum::routing::post(login))
+}
+
+pub fn protected_auth_router() -> Router<(DbPool, Config)> {
+    Router::new()
         .route("/me", axum::routing::get(me))
 }
 
