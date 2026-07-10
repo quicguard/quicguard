@@ -1,0 +1,5 @@
+target/
+.env
+static/
+frontend/node_modules/
+frontend/dist/

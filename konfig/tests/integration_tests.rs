@@ -15,9 +15,12 @@ fn make_auth_config(cookie_name: &str) -> AuthConfig {
         jwt_audience: "quicguard-proxy".to_string(),
         jwks_url: "https://auth.quicguard.dev/.well-known/jwks.json".to_string(),
         jwt_public_key: JWT_PUBLIC_KEY.to_string(),
+        jwt_private_key: String::new(),
         cookie_name: cookie_name.to_string(),
         redirect_url: "https://auth.quicguard.dev/login".to_string(),
         idp_url: "https://auth.quicguard.dev/idp".to_string(),
+        req_param_name: "req".to_string(),
+        token_param_name: "token".to_string(),
     }
 }
 
@@ -25,37 +28,48 @@ fn make_sample_org(org_id: &str, domain: &str, cookie_name: &str) -> Organizatio
     Organization {
         id: org_id.to_string(),
         name: format!("Org {org_id}"),
-        domains: vec![domain.to_string()],
-        policies: vec![
-            Policy {
-                id: "allow-read".to_string(),
-                name: "Allow reading".to_string(),
-                rules: vec![PolicyRule {
-                    resource: ResourcePattern::Prefix("/api/".to_string()),
-                    methods: HashSet::from([HttpMethod::Get, HttpMethod::Head]),
-                    conditions: vec![],
-                }],
-                effect: PolicyEffect::Allow,
+        domains: HashMap::from([(
+            domain.to_string(),
+            DomainConfig {
+                upstream: UpstreamConfig {
+                    base_url: "http://127.0.0.1:1025".to_string(),
+                    timeout_ms: 5000,
+                    max_retries: 3,
+                },
+                tls: TlsConfig::default(),
             },
-            Policy {
-                id: "deny-delete".to_string(),
-                name: "Deny delete on admin".to_string(),
-                rules: vec![PolicyRule {
-                    resource: ResourcePattern::Prefix("/api/admin/".to_string()),
-                    methods: HashSet::from([HttpMethod::Delete]),
-                    conditions: vec![],
-                }],
-                effect: PolicyEffect::Deny,
+        )]),
+        apps: HashMap::from([(
+            "main".to_string(),
+            AppConfig {
+                domains: vec![domain.to_string()],
+                policies: vec![
+                    Policy {
+                        id: "allow-read".to_string(),
+                        name: "Allow reading".to_string(),
+                        rules: vec![PolicyRule {
+                            resource: ResourcePattern::Prefix("/api/".to_string()),
+                            methods: HashSet::from([HttpMethod::Get, HttpMethod::Head]),
+                            conditions: vec![],
+                        }],
+                        effect: PolicyEffect::Allow,
+                    },
+                    Policy {
+                        id: "deny-delete".to_string(),
+                        name: "Deny delete on admin".to_string(),
+                        rules: vec![PolicyRule {
+                            resource: ResourcePattern::Prefix("/api/admin/".to_string()),
+                            methods: HashSet::from([HttpMethod::Delete]),
+                            conditions: vec![],
+                        }],
+                        effect: PolicyEffect::Deny,
+                    },
+                ],
             },
-        ],
-        domain_policies: HashMap::new(),
-        upstream: UpstreamConfig {
-            base_url: "http://127.0.0.1:1025".to_string(),
-            timeout_ms: 5000,
-            max_retries: 3,
-        },
+        )]),
+        user_groups: HashMap::new(),
+        app_user_groups: HashMap::new(),
         auth: make_auth_config(cookie_name),
-        tls: HashMap::new(),
     }
 }
 
@@ -66,10 +80,11 @@ fn encode_jwt(claims: &TokenClaims) -> String {
     jsonwebtoken::encode(&header, &claims, &key).expect("failed to encode JWT")
 }
 
-fn make_claims(sub: &str, org_id: &str) -> TokenClaims {
+fn make_claims(sub: &str, org_id: &str, app: &str) -> TokenClaims {
     TokenClaims {
         sub: sub.to_string(),
         org_id: org_id.to_string(),
+        app: app.to_string(),
         roles: vec!["user".to_string()],
         permissions: vec!["read".to_string()],
         iss: Some("https://auth.quicguard.dev".to_string()),
@@ -199,7 +214,7 @@ async fn test_domain_lookup_after_reload() {
 #[test]
 fn test_jwt_valid_token() {
     let auth = make_auth_config("session_token");
-    let claims = make_claims("user1", "org1");
+    let claims = make_claims("user1", "org1", "main");
     let token = encode_jwt(&claims);
 
     let key = jsonwebtoken::DecodingKey::from_ed_pem(auth.jwt_public_key.as_bytes()).unwrap();
@@ -216,7 +231,7 @@ fn test_jwt_valid_token() {
 
 #[test]
 fn test_jwt_wrong_key() {
-    let claims = make_claims("user1", "org1");
+    let claims = make_claims("user1", "org1", "main");
     let token = encode_jwt(&claims);
 
     let wrong_key = jsonwebtoken::DecodingKey::from_ed_pem(
@@ -274,7 +289,7 @@ fn test_jwt_empty_token() {
 #[test]
 fn test_policy_evaluate_allow_read() {
     let org = make_sample_org("org1", "demo.localhost", "session_token");
-    let claims = make_claims("user1", "org1");
+    let claims = make_claims("user1", "org1", "main");
 
     assert!(evaluate_policies(&org, "demo.localhost", &HttpMethod::Get, "/api/users", &claims).is_ok());
     assert!(evaluate_policies(&org, "demo.localhost", &HttpMethod::Head, "/api/users", &claims).is_ok());
@@ -283,7 +298,7 @@ fn test_policy_evaluate_allow_read() {
 #[test]
 fn test_policy_evaluate_deny_post() {
     let org = make_sample_org("org1", "demo.localhost", "session_token");
-    let claims = make_claims("user1", "org1");
+    let claims = make_claims("user1", "org1", "main");
 
     assert!(evaluate_policies(&org, "demo.localhost", &HttpMethod::Post, "/api/users", &claims).is_err());
 }
@@ -291,7 +306,7 @@ fn test_policy_evaluate_deny_post() {
 #[test]
 fn test_policy_evaluate_deny_delete_admin() {
     let org = make_sample_org("org1", "demo.localhost", "session_token");
-    let claims = make_claims("user1", "org1");
+    let claims = make_claims("user1", "org1", "main");
 
     assert!(evaluate_policies(&org, "demo.localhost", &HttpMethod::Delete, "/api/admin/users", &claims).is_err());
 }
@@ -299,7 +314,7 @@ fn test_policy_evaluate_deny_delete_admin() {
 #[test]
 fn test_policy_evaluate_delete_non_admin_ok() {
     let org = make_sample_org("org1", "demo.localhost", "session_token");
-    let claims = make_claims("user1", "org1");
+    let claims = make_claims("user1", "org1", "main");
 
     // DELETE on /api/users is not covered by deny-delete (which targets /api/admin/)
     // and not covered by allow-read (which is GET/HEAD only), so no policy matches → denied
@@ -317,7 +332,7 @@ async fn test_full_flow_valid_cookie_allow() {
     let org = state.lookup_org("demo.localhost").await.unwrap();
 
     // 2. Generate a valid JWT and put it in a cookie
-    let claims = make_claims("user1", "org1");
+    let claims = make_claims("user1", "org1", "main");
     let token = encode_jwt(&claims);
     let cookie_header = format!("theme=dark; session_token={token}; lang=en");
 
@@ -362,7 +377,7 @@ async fn test_full_flow_valid_jwt_policy_denied() {
     let org = state.lookup_org("demo.localhost").await.unwrap();
 
     // Generate a valid JWT
-    let claims = make_claims("user1", "org1");
+    let claims = make_claims("user1", "org1", "main");
     let token = encode_jwt(&claims);
 
     let parsed_claims = validate_jwt(&token, &org.auth).unwrap();
@@ -422,38 +437,45 @@ fn test_config_from_json_roundtrip() {
     let json = r#"{
         "id": "org1",
         "name": "Demo Corp",
-        "domains": ["demo.localhost"],
-        "policies": [
-            {
-                "id": "allow-read",
-                "name": "Allow reading",
-                "rules": [
-                    {
-                        "resource": {"Prefix": "/api/"},
-                        "methods": ["GET", "HEAD"],
-                        "conditions": []
-                    }
-                ],
-                "effect": "Allow"
-            },
-            {
-                "id": "deny-delete-admin",
-                "name": "Deny delete on admin",
-                "rules": [
-                    {
-                        "resource": {"Prefix": "/api/admin/"},
-                        "methods": ["DELETE"],
-                        "conditions": []
-                    }
-                ],
-                "effect": "Deny"
+        "domains": {
+            "demo.localhost": {
+                "upstream": {
+                    "base_url": "http://127.0.0.1:1025",
+                    "timeout_ms": 5000,
+                    "max_retries": 3
+                }
             }
-        ],
-        "domain_policies": {},
-        "upstream": {
-            "base_url": "http://127.0.0.1:1025",
-            "timeout_ms": 5000,
-            "max_retries": 3
+        },
+        "apps": {
+            "main": {
+                "domains": ["demo.localhost"],
+                "policies": [
+                    {
+                        "id": "allow-read",
+                        "name": "Allow reading",
+                        "rules": [
+                            {
+                                "resource": {"Prefix": "/api/"},
+                                "methods": ["GET", "HEAD"],
+                                "conditions": []
+                            }
+                        ],
+                        "effect": "Allow"
+                    },
+                    {
+                        "id": "deny-delete-admin",
+                        "name": "Deny delete on admin",
+                        "rules": [
+                            {
+                                "resource": {"Prefix": "/api/admin/"},
+                                "methods": ["DELETE"],
+                                "conditions": []
+                            }
+                        ],
+                        "effect": "Deny"
+                    }
+                ]
+            }
         },
         "auth": {
             "jwt_issuer": "https://auth.quicguard.dev",
@@ -467,10 +489,12 @@ fn test_config_from_json_roundtrip() {
 
     let org: Organization = serde_json::from_str(json).unwrap();
     assert_eq!(org.id, "org1");
-    assert_eq!(org.domains, vec!["demo.localhost"]);
-    assert_eq!(org.upstream.base_url, "http://127.0.0.1:1025");
+    assert!(org.domains.contains_key("demo.localhost"));
+    let domain_cfg = org.domains.get("demo.localhost").unwrap();
+    assert_eq!(domain_cfg.upstream.base_url, "http://127.0.0.1:1025");
+    let app = org.apps.get("main").unwrap();
+    assert_eq!(app.policies.len(), 2);
     assert_eq!(org.auth.cookie_name, "session_token");
-    assert_eq!(org.policies.len(), 2);
 
     // Verify it serializes back cleanly
     let serialized = serde_json::to_string(&org).unwrap();

@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "konfig"]
+members = [".", "konfig", "dashboard"]
 
 [package]
 name = "quicguard"

@@ -45,9 +45,12 @@ fn make_auth_config() -> AuthConfig {
         jwt_audience: String::new(),
         jwks_url: String::new(),
         jwt_public_key: String::new(),
+        jwt_private_key: String::new(),
         cookie_name: "session_token".to_string(),
         redirect_url: String::new(),
         idp_url: String::new(),
+        req_param_name: "req".to_string(),
+        token_param_name: "token".to_string(),
     }
 }
 
@@ -67,22 +70,26 @@ fn make_redis() -> RedisConfig {
     }
 }
 
-fn make_org_with_tls(org_id: &str, domain: &str, cert_pem: &str, key_pem: &str) -> Organization {
+fn make_org_with_tls(org_id: &str, domain_tls: HashMap<String, TlsConfig>) -> Organization {
     Organization {
         id: org_id.to_string(),
         name: format!("Org {org_id}"),
-        domains: vec![domain.to_string()],
-        policies: vec![],
-        domain_policies: HashMap::new(),
-        upstream: make_upstream(),
+        domains: domain_tls
+            .into_iter()
+            .map(|(d, tls)| {
+                (
+                    d,
+                    DomainConfig {
+                        upstream: make_upstream(),
+                        tls,
+                    },
+                )
+            })
+            .collect(),
+        apps: HashMap::new(),
+        user_groups: HashMap::new(),
+        app_user_groups: HashMap::new(),
         auth: make_auth_config(),
-        tls: HashMap::from([(
-            domain.to_string(),
-            TlsConfig {
-                cert_pem: cert_pem.to_string(),
-                key_pem: key_pem.to_string(),
-            },
-        )]),
     }
 }
 
@@ -99,8 +106,26 @@ async fn make_state_with_tls(orgs: Vec<Organization>) -> Arc<ProxyState> {
 
 #[tokio::test]
 async fn test_two_orgs_different_tls_certs() {
-    let org_a = make_org_with_tls("org-a", "app.example.com", CERT_A, KEY_A);
-    let org_b = make_org_with_tls("org-b", "other.example.com", CERT_B, KEY_B);
+    let org_a = make_org_with_tls(
+        "org-a",
+        HashMap::from([(
+            "app.example.com".to_string(),
+            TlsConfig {
+                cert_pem: CERT_A.to_string(),
+                key_pem: KEY_A.to_string(),
+            },
+        )]),
+    );
+    let org_b = make_org_with_tls(
+        "org-b",
+        HashMap::from([(
+            "other.example.com".to_string(),
+            TlsConfig {
+                cert_pem: CERT_B.to_string(),
+                key_pem: KEY_B.to_string(),
+            },
+        )]),
+    );
 
     let state = make_state_with_tls(vec![org_a, org_b]).await;
 
@@ -108,14 +133,11 @@ async fn test_two_orgs_different_tls_certs() {
     let org_a = &orgs.organizations["org-a"];
     let org_b = &orgs.organizations["org-b"];
 
-    assert_eq!(org_a.tls.len(), 1);
-    assert_eq!(org_b.tls.len(), 1);
-    assert!(org_a.tls.contains_key("app.example.com"));
-    assert!(org_b.tls.contains_key("other.example.com"));
-
-    let cert_a = &org_a.tls["app.example.com"].cert_pem;
-    let cert_b = &org_b.tls["other.example.com"].cert_pem;
-    assert_ne!(cert_a, cert_b);
+    let tls_a = &org_a.domains["app.example.com"].tls;
+    let tls_b = &org_b.domains["other.example.com"].tls;
+    assert!(!tls_a.cert_pem.is_empty());
+    assert!(!tls_b.cert_pem.is_empty());
+    assert_ne!(tls_a.cert_pem, tls_b.cert_pem);
 }
 
 #[tokio::test]
@@ -123,49 +145,68 @@ async fn test_org_with_multiple_domain_certs() {
     let org = Organization {
         id: "org-multi".to_string(),
         name: "Multi-Domain Org".to_string(),
-        domains: vec![
-            "app.example.com".to_string(),
-            "api.example.com".to_string(),
-        ],
-        policies: vec![],
-        domain_policies: HashMap::new(),
-        upstream: make_upstream(),
-        auth: make_auth_config(),
-        tls: HashMap::from([
+        domains: HashMap::from([
             (
                 "app.example.com".to_string(),
-                TlsConfig {
-                    cert_pem: CERT_A.to_string(),
-                    key_pem: KEY_A.to_string(),
+                DomainConfig {
+                    upstream: make_upstream(),
+                    tls: TlsConfig {
+                        cert_pem: CERT_A.to_string(),
+                        key_pem: KEY_A.to_string(),
+                    },
                 },
             ),
             (
                 "api.example.com".to_string(),
-                TlsConfig {
-                    cert_pem: CERT_B.to_string(),
-                    key_pem: KEY_B.to_string(),
+                DomainConfig {
+                    upstream: make_upstream(),
+                    tls: TlsConfig {
+                        cert_pem: CERT_B.to_string(),
+                        key_pem: KEY_B.to_string(),
+                    },
                 },
             ),
         ]),
+        apps: HashMap::new(),
+        user_groups: HashMap::new(),
+        app_user_groups: HashMap::new(),
+        auth: make_auth_config(),
     };
 
     let state = make_state_with_tls(vec![org]).await;
 
     let orgs = state.config.read().await;
     let org = &orgs.organizations["org-multi"];
-    assert_eq!(org.tls.len(), 2);
-    assert!(org.tls.contains_key("app.example.com"));
-    assert!(org.tls.contains_key("api.example.com"));
-    assert_ne!(
-        org.tls["app.example.com"].cert_pem,
-        org.tls["api.example.com"].cert_pem
-    );
+    assert_eq!(org.domains.len(), 2);
+    let tls_app = &org.domains["app.example.com"].tls;
+    let tls_api = &org.domains["api.example.com"].tls;
+    assert!(!tls_app.cert_pem.is_empty());
+    assert!(!tls_api.cert_pem.is_empty());
+    assert_ne!(tls_app.cert_pem, tls_api.cert_pem);
 }
 
 #[tokio::test]
 async fn test_collect_all_tls_certs_from_state() {
-    let org_a = make_org_with_tls("org-a", "app.example.com", CERT_A, KEY_A);
-    let org_b = make_org_with_tls("org-b", "other.example.com", CERT_B, KEY_B);
+    let org_a = make_org_with_tls(
+        "org-a",
+        HashMap::from([(
+            "app.example.com".to_string(),
+            TlsConfig {
+                cert_pem: CERT_A.to_string(),
+                key_pem: KEY_A.to_string(),
+            },
+        )]),
+    );
+    let org_b = make_org_with_tls(
+        "org-b",
+        HashMap::from([(
+            "other.example.com".to_string(),
+            TlsConfig {
+                cert_pem: CERT_B.to_string(),
+                key_pem: KEY_B.to_string(),
+            },
+        )]),
+    );
 
     let state = make_state_with_tls(vec![org_a, org_b]).await;
 
@@ -173,12 +214,12 @@ async fn test_collect_all_tls_certs_from_state() {
     let mut collected_certs: Vec<(String, String, String)> = Vec::new();
     let orgs = state.config.read().await;
     for org in orgs.organizations.values() {
-        for (domain, tls_cfg) in &org.tls {
-            if !tls_cfg.cert_pem.is_empty() && !tls_cfg.key_pem.is_empty() {
+        for (domain, domain_cfg) in &org.domains {
+            if !domain_cfg.tls.cert_pem.is_empty() && !domain_cfg.tls.key_pem.is_empty() {
                 collected_certs.push((
                     domain.clone(),
-                    tls_cfg.cert_pem.clone(),
-                    tls_cfg.key_pem.clone(),
+                    domain_cfg.tls.cert_pem.clone(),
+                    domain_cfg.tls.key_pem.clone(),
                 ));
             }
         }
@@ -205,13 +246,22 @@ async fn test_collect_all_tls_certs_from_state() {
 
 #[test]
 fn test_tls_config_serialization_roundtrip() {
-    let org = make_org_with_tls("org-a", "app.example.com", CERT_A, KEY_A);
+    let org = make_org_with_tls(
+        "org-a",
+        HashMap::from([(
+            "app.example.com".to_string(),
+            TlsConfig {
+                cert_pem: CERT_A.to_string(),
+                key_pem: KEY_A.to_string(),
+            },
+        )]),
+    );
     let json = serde_json::to_string_pretty(&org).unwrap();
     let deserialized: Organization = serde_json::from_str(&json).unwrap();
 
-    assert_eq!(deserialized.tls.len(), 1);
-    assert_eq!(deserialized.tls["app.example.com"].cert_pem, CERT_A);
-    assert_eq!(deserialized.tls["app.example.com"].key_pem, KEY_A);
+    let tls = &deserialized.domains["app.example.com"].tls;
+    assert_eq!(tls.cert_pem, CERT_A);
+    assert_eq!(tls.key_pem, KEY_A);
 }
 
 #[test]
@@ -219,13 +269,14 @@ fn test_tls_config_deserialization_without_tls_field() {
     let json = r#"{
         "id": "org-old",
         "name": "Old Org",
-        "domains": ["old.example.com"],
-        "policies": [],
-        "domain_policies": {},
-        "upstream": {
-            "base_url": "http://127.0.0.1:8080",
-            "timeout_ms": 5000,
-            "max_retries": 3
+        "domains": {
+            "old.example.com": {
+                "upstream": {
+                    "base_url": "http://127.0.0.1:8080",
+                    "timeout_ms": 5000,
+                    "max_retries": 3
+                }
+            }
         },
         "auth": {
             "jwt_issuer": "",
@@ -237,7 +288,10 @@ fn test_tls_config_deserialization_without_tls_field() {
     }"#;
 
     let org: Organization = serde_json::from_str(json).unwrap();
-    assert!(org.tls.is_empty());
+    let tls = &org.domains["old.example.com"].tls;
+    assert!(tls.cert_pem.is_empty());
+    assert!(tls.key_pem.is_empty());
+    assert!(org.apps.is_empty());
 }
 
 #[tokio::test]
@@ -247,14 +301,32 @@ async fn test_config_version_increments_on_reload() {
     let v0 = state.config_version.load(std::sync::atomic::Ordering::SeqCst);
     assert_eq!(v0, 0);
 
-    let org = make_org_with_tls("org-a", "app.example.com", CERT_A, KEY_A);
+    let org = make_org_with_tls(
+        "org-a",
+        HashMap::from([(
+            "app.example.com".to_string(),
+            TlsConfig {
+                cert_pem: CERT_A.to_string(),
+                key_pem: KEY_A.to_string(),
+            },
+        )]),
+    );
     state.reload_org("org-a", org).await;
 
     let v1 = state.config_version.load(std::sync::atomic::Ordering::SeqCst);
     assert_eq!(v1, 1);
 
     // Reload same org again — version should increment
-    let org = make_org_with_tls("org-a", "app.example.com", CERT_A, KEY_A);
+    let org = make_org_with_tls(
+        "org-a",
+        HashMap::from([(
+            "app.example.com".to_string(),
+            TlsConfig {
+                cert_pem: CERT_A.to_string(),
+                key_pem: KEY_A.to_string(),
+            },
+        )]),
+    );
     state.reload_org("org-a", org).await;
 
     let v2 = state.config_version.load(std::sync::atomic::Ordering::SeqCst);
@@ -263,7 +335,16 @@ async fn test_config_version_increments_on_reload() {
 
 #[tokio::test]
 async fn test_config_version_increments_on_remove() {
-    let org = make_org_with_tls("org-a", "app.example.com", CERT_A, KEY_A);
+    let org = make_org_with_tls(
+        "org-a",
+        HashMap::from([(
+            "app.example.com".to_string(),
+            TlsConfig {
+                cert_pem: CERT_A.to_string(),
+                key_pem: KEY_A.to_string(),
+            },
+        )]),
+    );
     let state = make_state_with_tls(vec![org]).await;
 
     let v0 = state.config_version.load(std::sync::atomic::Ordering::SeqCst);
@@ -277,40 +358,60 @@ async fn test_config_version_increments_on_remove() {
 
 #[tokio::test]
 async fn test_new_domain_appears_after_reload() {
-    let org = make_org_with_tls("org-a", "app.example.com", CERT_A, KEY_A);
+    let org = make_org_with_tls(
+        "org-a",
+        HashMap::from([(
+            "app.example.com".to_string(),
+            TlsConfig {
+                cert_pem: CERT_A.to_string(),
+                key_pem: KEY_A.to_string(),
+            },
+        )]),
+    );
     let state = make_state_with_tls(vec![org]).await;
 
     // Initially only app.example.com exists
     let orgs = state.config.read().await;
-    assert!(orgs.organizations["org-a"].tls.contains_key("app.example.com"));
-    assert!(!orgs.organizations["org-a"].tls.contains_key("api.example.com"));
+    assert!(orgs.organizations["org-a"].domains.contains_key("app.example.com"));
+    assert!(!orgs.organizations["org-a"].domains.contains_key("api.example.com"));
     drop(orgs);
 
     // Add api.example.com via reload
     let updated = Organization {
         id: "org-a".to_string(),
         name: "Org A".to_string(),
-        domains: vec!["app.example.com".to_string()],
-        policies: vec![],
-        domain_policies: HashMap::new(),
-        upstream: make_upstream(),
-        auth: make_auth_config(),
-        tls: HashMap::from([
+        domains: HashMap::from([
             (
                 "app.example.com".to_string(),
-                TlsConfig { cert_pem: CERT_A.to_string(), key_pem: KEY_A.to_string() },
+                DomainConfig {
+                    upstream: make_upstream(),
+                    tls: TlsConfig {
+                        cert_pem: CERT_A.to_string(),
+                        key_pem: KEY_A.to_string(),
+                    },
+                },
             ),
             (
                 "api.example.com".to_string(),
-                TlsConfig { cert_pem: CERT_B.to_string(), key_pem: KEY_B.to_string() },
+                DomainConfig {
+                    upstream: make_upstream(),
+                    tls: TlsConfig {
+                        cert_pem: CERT_B.to_string(),
+                        key_pem: KEY_B.to_string(),
+                    },
+                },
             ),
         ]),
+        apps: HashMap::new(),
+        user_groups: HashMap::new(),
+        app_user_groups: HashMap::new(),
+        auth: make_auth_config(),
     };
     state.reload_org("org-a", updated).await;
 
     // Now api.example.com should be present
     let orgs = state.config.read().await;
-    assert!(orgs.organizations["org-a"].tls.contains_key("app.example.com"));
-    assert!(orgs.organizations["org-a"].tls.contains_key("api.example.com"));
-    assert_eq!(orgs.organizations["org-a"].tls.len(), 2);
+    assert!(orgs.organizations["org-a"].domains.contains_key("app.example.com"));
+    assert!(orgs.organizations["org-a"].domains.contains_key("api.example.com"));
+    assert_eq!(orgs.organizations["org-a"].domains.len(), 2);
 }

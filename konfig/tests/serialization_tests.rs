@@ -10,49 +10,63 @@ fn test_config_serialization_roundtrip() {
             Organization {
                 id: "org1".to_string(),
                 name: "Test Org".to_string(),
-                domains: vec!["app.example.com".to_string()],
-                policies: vec![Policy {
-                    id: "p1".to_string(),
-                    name: "Allow GET".to_string(),
-                    rules: vec![PolicyRule {
-                        resource: ResourcePattern::Prefix("/api/".to_string()),
-                        methods: HashSet::from([HttpMethod::Get]),
-                        conditions: vec![Condition {
-                            claim: "org_id".to_string(),
-                            operator: ConditionOperator::Equals,
-                            value: "org1".to_string(),
-                        }],
-                    }],
-                    effect: PolicyEffect::Allow,
-                }],
-                domain_policies: HashMap::from([(
+                domains: HashMap::from([(
                     "app.example.com".to_string(),
-                    vec![Policy {
-                        id: "dp1".to_string(),
-                        name: "Domain policy".to_string(),
-                        rules: vec![PolicyRule {
-                            resource: ResourcePattern::Exact("/api/special".to_string()),
-                            methods: HashSet::from([HttpMethod::Post]),
-                            conditions: vec![],
-                        }],
-                        effect: PolicyEffect::Deny,
-                    }],
+                    DomainConfig {
+                        upstream: UpstreamConfig {
+                            base_url: "https://api.example.com".to_string(),
+                            timeout_ms: 5000,
+                            max_retries: 3,
+                        },
+                        tls: TlsConfig::default(),
+                    },
                 )]),
-                upstream: UpstreamConfig {
-                    base_url: "https://api.example.com".to_string(),
-                    timeout_ms: 5000,
-                    max_retries: 3,
-                },
+                apps: HashMap::from([(
+                    "main".to_string(),
+                    AppConfig {
+                        domains: vec!["app.example.com".to_string()],
+                        policies: vec![
+                            Policy {
+                                id: "p1".to_string(),
+                                name: "Allow GET".to_string(),
+                                rules: vec![PolicyRule {
+                                    resource: ResourcePattern::Prefix("/api/".to_string()),
+                                    methods: HashSet::from([HttpMethod::Get]),
+                                    conditions: vec![Condition {
+                                        claim: "org_id".to_string(),
+                                        operator: ConditionOperator::Equals,
+                                        value: "org1".to_string(),
+                                    }],
+                                }],
+                                effect: PolicyEffect::Allow,
+                            },
+                            Policy {
+                                id: "dp1".to_string(),
+                                name: "Domain policy".to_string(),
+                                rules: vec![PolicyRule {
+                                    resource: ResourcePattern::Exact("/api/special".to_string()),
+                                    methods: HashSet::from([HttpMethod::Post]),
+                                    conditions: vec![],
+                                }],
+                                effect: PolicyEffect::Deny,
+                            },
+                        ],
+                    },
+                )]),
+                user_groups: HashMap::new(),
+                app_user_groups: HashMap::new(),
                 auth: AuthConfig {
                     jwt_issuer: "https://auth.example.com".to_string(),
                     jwt_audience: "proxy".to_string(),
                     jwks_url: "https://auth.example.com/.well-known/jwks.json".to_string(),
                     jwt_public_key: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAB8WW87geWYlziXa6h0b17GTogvEcdkCk+XWhrX/hS+Y=\n-----END PUBLIC KEY-----".to_string(),
+                    jwt_private_key: String::new(),
                     cookie_name: "session_token".to_string(),
                     redirect_url: "https://auth.example.com/login".to_string(),
                     idp_url: String::new(),
+                    req_param_name: "req".to_string(),
+                    token_param_name: "token".to_string(),
                 },
-                tls: HashMap::new(),
             },
         )]),
     };
@@ -63,10 +77,11 @@ fn test_config_serialization_roundtrip() {
     assert_eq!(deserialized.organizations.len(), 1);
     let org = deserialized.organizations.get("org1").unwrap();
     assert_eq!(org.name, "Test Org");
-    assert_eq!(org.policies.len(), 1);
-    assert_eq!(org.domain_policies.len(), 1);
-    assert_eq!(org.policies[0].id, "p1");
-    assert_eq!(org.domain_policies["app.example.com"][0].id, "dp1");
+    assert_eq!(org.domains.len(), 1);
+    let app = org.apps.get("main").unwrap();
+    assert_eq!(app.policies.len(), 2);
+    assert_eq!(app.policies[0].id, "p1");
+    assert_eq!(app.policies[1].id, "dp1");
 }
 
 #[test]
@@ -74,10 +89,13 @@ fn test_organization_serialization_with_defaults() {
     let json = r#"{
         "id": "org1",
         "name": "Test Org",
-        "domains": ["app.example.com"],
-        "upstream": {
-            "base_url": "https://api.example.com",
-            "timeout_ms": 5000
+        "domains": {
+            "app.example.com": {
+                "upstream": {
+                    "base_url": "https://api.example.com",
+                    "timeout_ms": 5000
+                }
+            }
         },
         "auth": {
             "jwt_issuer": "https://auth.example.com",
@@ -89,10 +107,14 @@ fn test_organization_serialization_with_defaults() {
 
     let org: Organization = serde_json::from_str(json).unwrap();
     assert_eq!(org.id, "org1");
-    assert!(org.policies.is_empty());
-    assert!(org.domain_policies.is_empty());
-    assert_eq!(org.upstream.max_retries, 3);
+    assert_eq!(org.domains.len(), 1);
+    let domain_cfg = org.domains.get("app.example.com").unwrap();
+    assert!(domain_cfg.tls.cert_pem.is_empty());
+    assert!(domain_cfg.upstream.max_retries == 3);
     assert_eq!(org.auth.cookie_name, "session_token");
+    assert!(org.apps.is_empty());
+    assert!(org.user_groups.is_empty());
+    assert!(org.app_user_groups.is_empty());
 }
 
 #[test]
@@ -224,6 +246,7 @@ fn test_token_claims_serialization() {
     let claims = TokenClaims {
         sub: "user1".to_string(),
         org_id: "org1".to_string(),
+        app: "app1".to_string(),
         roles: vec!["admin".to_string()],
         permissions: vec!["read".to_string(), "write".to_string()],
         iss: Some("https://auth.example.com".to_string()),
@@ -261,41 +284,65 @@ fn test_complex_organization_json() {
     let json = r#"{
         "id": "org123",
         "name": "Acme Corp",
-        "domains": ["app.acme.com", "api.acme.com"],
-        "policies": [
-            {
-                "id": "general-read",
-                "name": "Allow reading",
-                "rules": [
-                    {
-                        "resource": {"Prefix": "/api/"},
-                        "methods": ["GET"],
-                        "conditions": []
-                    }
-                ],
-                "effect": "Allow"
-            }
-        ],
-        "domain_policies": {
-            "api.acme.com": [
-                {
-                    "id": "api-deny-delete",
-                    "name": "Deny delete on API",
-                    "rules": [
-                        {
-                            "resource": {"Prefix": "/api/"},
-                            "methods": ["DELETE"],
-                            "conditions": []
-                        }
-                    ],
-                    "effect": "Deny"
+        "domains": {
+            "app.acme.com": {
+                "upstream": {
+                    "base_url": "https://backend.acme.com",
+                    "timeout_ms": 10000,
+                    "max_retries": 5
+                },
+                "tls": {
+                    "cert_pem": "CERT_APP",
+                    "key_pem": "KEY_APP"
                 }
-            ]
+            },
+            "api.acme.com": {
+                "upstream": {
+                    "base_url": "https://backend.acme.com",
+                    "timeout_ms": 10000,
+                    "max_retries": 5
+                },
+                "tls": {
+                    "cert_pem": "CERT_API",
+                    "key_pem": "KEY_API"
+                }
+            }
         },
-        "upstream": {
-            "base_url": "https://backend.acme.com",
-            "timeout_ms": 10000,
-            "max_retries": 5
+        "apps": {
+            "web-app": {
+                "domains": ["app.acme.com"],
+                "policies": [
+                    {
+                        "id": "general-read",
+                        "name": "Allow reading",
+                        "rules": [
+                            {
+                                "resource": {"Prefix": "/api/"},
+                                "methods": ["GET"],
+                                "conditions": []
+                            }
+                        ],
+                        "effect": "Allow"
+                    }
+                ]
+            },
+            "api-app": {
+                "domains": ["api.acme.com"],
+                "policies": [
+                    {
+                        "id": "api-deny-delete",
+                        "name": "Deny delete on API",
+                        "rules": [
+                            {
+                                "resource": {"Prefix": "/api/"},
+                                "methods": ["DELETE"],
+                                "conditions": []
+                            }
+                        ],
+                        "effect": "Deny"
+                    }
+                ]
+            }
         },
         "auth": {
             "jwt_issuer": "https://auth.acme.com",
@@ -310,8 +357,9 @@ fn test_complex_organization_json() {
 
     assert_eq!(org.id, "org123");
     assert_eq!(org.domains.len(), 2);
-    assert_eq!(org.policies.len(), 1);
-    assert_eq!(org.domain_policies.len(), 1);
-    assert_eq!(org.upstream.max_retries, 5);
+    assert_eq!(org.apps.len(), 2);
+    assert_eq!(org.apps["web-app"].policies.len(), 1);
+    assert_eq!(org.apps["api-app"].policies.len(), 1);
+    assert_eq!(org.domains["app.acme.com"].upstream.max_retries, 5);
     assert_eq!(org.auth.cookie_name, "acme_session");
 }

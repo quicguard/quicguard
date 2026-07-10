@@ -57,11 +57,12 @@ impl DomainCertLoader {
             let org = orgs.organizations.get(org_id).ok_or_else(|| {
                 anyhow::anyhow!("Organization '{org_id}' not found for domain '{domain}'")
             })?;
-            let tls = org.tls.get(domain).ok_or_else(|| {
+            let domain_config = org.domains.get(domain).ok_or_else(|| {
                 anyhow::anyhow!(
-                    "No TLS certificate configured for domain '{domain}' in org '{org_id}'"
+                    "No configuration for domain '{domain}' in org '{org_id}'"
                 )
             })?;
+            let tls = &domain_config.tls;
             if tls.cert_pem.is_empty() || tls.key_pem.is_empty() {
                 anyhow::bail!(
                     "Empty TLS certificate or key for domain '{domain}' in org '{org_id}'"
@@ -296,9 +297,12 @@ async fn run_server(args: Args) -> Result<()> {
         jwt_audience: String::new(),
         jwks_url: String::new(),
         jwt_public_key: String::new(),
+        jwt_private_key: String::new(),
         cookie_name: "session_token".to_string(),
         redirect_url: args.redirect_url.clone(),
         idp_url: args.idp_url.clone(),
+        req_param_name: "req".to_string(),
+        token_param_name: "token".to_string(),
     };
 
     let proxy_state = match ProxyState::from_redis(redis_config.clone(), auth_config).await {
@@ -342,7 +346,7 @@ async fn run_server(args: Args) -> Result<()> {
                             config
                                 .organizations
                                 .get(&update.org_id)
-                                .map(|o| o.domains.clone())
+                                .map(|o| o.domains.keys().cloned().collect())
                                 .unwrap_or_default()
                         };
                         state.remove_org(&update.org_id).await;
@@ -354,7 +358,7 @@ async fn run_server(args: Args) -> Result<()> {
                     }
                     _ => {
                         if let Some(org) = update.organization {
-                            let domains = org.domains.clone();
+                            let domains: Vec<String> = org.domains.keys().cloned().collect();
                             state.reload_org(&update.org_id, org).await;
                             // Build TLS configs for each domain in the updated org
                             for domain in &domains {
@@ -795,7 +799,7 @@ fn netmask_to_cidr(netmask: Ipv4Addr) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use konfig::{AuthConfig, Organization, RedisConfig, TlsConfig, UpstreamConfig};
+    use konfig::{AuthConfig, DomainConfig, Organization, RedisConfig, TlsConfig, UpstreamConfig};
     use s2n_quic::provider::tls::s2n_tls::ConfigLoader as _;
 
     const CERT_A: &str = "-----BEGIN CERTIFICATE-----
@@ -848,9 +852,12 @@ q+6k53HLaEgUGqHB/8sLTHSYsrShRANCAATE8koiwsNxKP9zTbVhcZ3luJxxuCfo
             jwt_audience: String::new(),
             jwks_url: String::new(),
             jwt_public_key: String::new(),
+            jwt_private_key: String::new(),
             cookie_name: "session_token".to_string(),
             redirect_url: String::new(),
             idp_url: String::new(),
+            req_param_name: "req".to_string(),
+            token_param_name: "token".to_string(),
         }
     }
 
@@ -863,14 +870,23 @@ q+6k53HLaEgUGqHB/8sLTHSYsrShRANCAATE8koiwsNxKP9zTbVhcZ3luJxxuCfo
     }
 
     fn make_org(org_id: &str, domains: Vec<&str>, certs: Vec<(&str, &str, &str)>) -> Organization {
-        let tls: HashMap<String, TlsConfig> = certs
+        let cert_map: HashMap<String, (String, String)> = certs
             .into_iter()
             .map(|(domain, cert, key)| {
+                (domain.to_string(), (cert.to_string(), key.to_string()))
+            })
+            .collect();
+        let domain_configs: HashMap<String, DomainConfig> = domains
+            .into_iter()
+            .map(|d| {
+                let (cert_pem, key_pem) = cert_map.get(d)
+                    .map(|(c, k)| (c.clone(), k.clone()))
+                    .unwrap_or_default();
                 (
-                    domain.to_string(),
-                    TlsConfig {
-                        cert_pem: cert.to_string(),
-                        key_pem: key.to_string(),
+                    d.to_string(),
+                    DomainConfig {
+                        upstream: make_upstream(),
+                        tls: TlsConfig { cert_pem, key_pem },
                     },
                 )
             })
@@ -878,12 +894,11 @@ q+6k53HLaEgUGqHB/8sLTHSYsrShRANCAATE8koiwsNxKP9zTbVhcZ3luJxxuCfo
         Organization {
             id: org_id.to_string(),
             name: format!("Org {org_id}"),
-            domains: domains.into_iter().map(String::from).collect(),
-            policies: vec![],
-            domain_policies: HashMap::new(),
-            upstream: make_upstream(),
+            domains: domain_configs,
+            apps: HashMap::new(),
+            user_groups: HashMap::new(),
+            app_user_groups: HashMap::new(),
             auth: make_auth(),
-            tls,
         }
     }
 
@@ -922,18 +937,23 @@ q+6k53HLaEgUGqHB/8sLTHSYsrShRANCAATE8koiwsNxKP9zTbVhcZ3luJxxuCfo
         let org = Organization {
             id: "org-notls".to_string(),
             name: "No TLS Org".to_string(),
-            domains: vec!["notls.example.com".to_string()],
-            policies: vec![],
-            domain_policies: HashMap::new(),
-            upstream: make_upstream(),
+            domains: HashMap::from([(
+                "notls.example.com".to_string(),
+                DomainConfig {
+                    upstream: make_upstream(),
+                    tls: TlsConfig::default(),
+                },
+            )]),
+            apps: HashMap::new(),
+            user_groups: HashMap::new(),
+            app_user_groups: HashMap::new(),
             auth: make_auth(),
-            tls: HashMap::new(),
         };
         let state = make_state(vec![org]).await;
 
         let result = DomainCertLoader::build_config_for_domain(&state, "notls.example.com").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No TLS certificate"));
+        assert!(result.unwrap_err().to_string().contains("Empty TLS certificate"));
     }
 
     #[tokio::test]

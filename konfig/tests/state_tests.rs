@@ -9,9 +9,12 @@ fn default_auth() -> AuthConfig {
         jwt_audience: "proxy".to_string(),
         jwks_url: "https://auth.example.com/.well-known/jwks.json".to_string(),
         jwt_public_key: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAB8WW87geWYlziXa6h0b17GTogvEcdkCk+XWhrX/hS+Y=\n-----END PUBLIC KEY-----".to_string(),
+        jwt_private_key: String::new(),
         cookie_name: "session_token".to_string(),
         redirect_url: "https://auth.example.com/login".to_string(),
         idp_url: String::new(),
+        req_param_name: "req".to_string(),
+        token_param_name: "token".to_string(),
     }
 }
 
@@ -35,12 +38,22 @@ fn test_org(id: &str, domains: Vec<&str>) -> Organization {
     Organization {
         id: id.to_string(),
         name: format!("Org {}", id),
-        domains: domains.into_iter().map(String::from).collect(),
-        policies: vec![],
-        domain_policies: HashMap::new(),
-        upstream: default_upstream(),
+        domains: domains
+            .into_iter()
+            .map(|d| {
+                (
+                    d.to_string(),
+                    DomainConfig {
+                        upstream: default_upstream(),
+                        tls: TlsConfig::default(),
+                    },
+                )
+            })
+            .collect(),
+        apps: HashMap::new(),
+        user_groups: HashMap::new(),
+        app_user_groups: HashMap::new(),
         auth: default_auth(),
-        tls: HashMap::new(),
     }
 }
 
@@ -124,12 +137,17 @@ async fn test_proxy_state_reload_updates_existing() {
     let updated_org = Organization {
         id: "org1".to_string(),
         name: "Updated Org".to_string(),
-        domains: vec!["new.example.com".to_string()],
-        policies: vec![],
-        domain_policies: HashMap::new(),
-        upstream: default_upstream(),
+        domains: HashMap::from([(
+            "new.example.com".to_string(),
+            DomainConfig {
+                upstream: default_upstream(),
+                tls: TlsConfig::default(),
+            },
+        )]),
+        apps: HashMap::new(),
+        user_groups: HashMap::new(),
+        app_user_groups: HashMap::new(),
         auth: default_auth(),
-        tls: HashMap::new(),
     };
     state.reload_org("org1", updated_org).await;
 
