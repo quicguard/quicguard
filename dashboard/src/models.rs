@@ -51,8 +51,19 @@ pub struct DomainInput {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct AppDomainInput {
+    pub paths: Vec<String>,
+    #[serde(default = "default_primary")]
+    pub r#type: String,
+}
+
+fn default_primary() -> String {
+    "primary".to_string()
+}
+
+#[derive(Debug, Deserialize)]
 pub struct AppInput {
-    pub domains: Vec<String>,
+    pub domains: HashMap<String, AppDomainInput>,
     #[serde(default)]
     pub policies: Vec<AddPolicy>,
 }

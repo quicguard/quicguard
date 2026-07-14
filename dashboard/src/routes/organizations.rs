@@ -95,7 +95,8 @@ fn build_org_config(input: &CreateOrganization) -> Result<Value, String> {
                 "tls": {
                     "cert_pem": cert,
                     "key_pem": key
-                }
+                },
+                "policies": []
             }),
         );
     }
@@ -108,10 +109,17 @@ fn build_org_config(input: &CreateOrganization) -> Result<Value, String> {
             .iter()
             .map(|p| build_policy_value(p))
             .collect();
+        let mut domains = HashMap::new();
+        for (domain_name, domain_input) in &app_input.domains {
+            domains.insert(domain_name.clone(), json!({
+                "paths": domain_input.paths,
+                "type": domain_input.r#type
+            }));
+        }
         apps.insert(
             app_name.clone(),
             json!({
-                "domains": app_input.domains,
+                "domains": domains,
                 "policies": policies
             }),
         );
@@ -238,10 +246,18 @@ fn build_update_config(
                 .map(|p| build_policy_value(p))
                 .collect();
 
+            let mut app_domains = HashMap::new();
+            for (domain_name, domain_input) in &app_input.domains {
+                app_domains.insert(domain_name.clone(), json!({
+                    "paths": domain_input.paths,
+                    "type": domain_input.r#type
+                }));
+            }
+
             existing_apps.insert(
                 app_name.clone(),
                 json!({
-                    "domains": app_input.domains,
+                    "domains": app_domains,
                     "policies": policies
                 }),
             );

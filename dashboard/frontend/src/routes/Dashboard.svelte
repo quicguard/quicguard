@@ -97,8 +97,15 @@
   function makeAppEntry() {
     return {
       id: `app-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
-      domains: [],
+      domains: {},
       policies: [],
+    };
+  }
+
+  function makeAppDomainEntry() {
+    return {
+      paths: ['/'],
+      type: 'primary',
     };
   }
 
@@ -219,10 +226,12 @@
   }
 
   function toggleAppDomain(app, domain) {
-    if (app.domains.includes(domain)) {
-      app.domains = app.domains.filter(d => d !== domain);
+    if (app.domains[domain]) {
+      const newDomains = { ...app.domains };
+      delete newDomains[domain];
+      app.domains = newDomains;
     } else {
-      app.domains = [...app.domains, domain];
+      app.domains = { ...app.domains, [domain]: makeAppDomainEntry() };
     }
   }
 
@@ -580,7 +589,7 @@
       }));
       editApps.push({
         id: appId,
-        domains: appCfg.domains || [],
+        domains: appCfg.domains || {},
         policies: policies,
       });
     }
@@ -640,10 +649,12 @@
   }
 
   function toggleEditAppDomain(app, domain) {
-    if (app.domains.includes(domain)) {
-      app.domains = app.domains.filter(d => d !== domain);
+    if (app.domains[domain]) {
+      const newDomains = { ...app.domains };
+      delete newDomains[domain];
+      app.domains = newDomains;
     } else {
-      app.domains = [...app.domains, domain];
+      app.domains = { ...app.domains, [domain]: makeAppDomainEntry() };
     }
   }
 
@@ -828,7 +839,7 @@
                 <div class="domain-detail-header" role="button" tabindex="0" on:click={() => toggleDomainExpand(`app:${appId}`)} on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggleDomainExpand(`app:${appId}`); }}>
                   <span class="domain-detail-name">{appId}</span>
                   <div class="domain-detail-meta">
-                    <span class="tag">{appCfg.domains?.length || 0} domains</span>
+                    <span class="tag">{Object.keys(appCfg.domains || {}).length} domains</span>
                     <span class="badge">{appCfg.policies?.length || 0} policies</span>
                     <span class="expand-icon">{expandedDomain === `app:${appId}` ? '\u25B2' : '\u25BC'}</span>
                   </div>
@@ -838,8 +849,12 @@
                     <div class="detail-grid">
                       <div>
                         <h4>Domains</h4>
-                        {#each (appCfg.domains || []) as domain}
-                          <span class="tag">{domain}</span>
+                        {#each Object.entries(appCfg.domains || {}) as [domainName, domainInfo]}
+                          <div class="app-domain-entry">
+                            <span class="tag">{domainName}</span>
+                            <span class="badge">{domainInfo.type || 'primary'}</span>
+                            <span class="muted">Paths: {(domainInfo.paths || ['/']).join(', ')}</span>
+                          </div>
                         {:else}
                           <span class="muted">No domains</span>
                         {/each}
@@ -961,9 +976,24 @@
                           <span class="muted">No domains configured yet. Add domains in the previous step.</span>
                         {:else}
                           {#each editDomains.filter(d => d.name.trim()) as domain}
-                            <label class="check-label">
-                              <input type="checkbox" checked={editApps[i].domains.includes(domain.name)} on:change={() => toggleEditAppDomain(editApps[i], domain.name)} /> {domain.name}
-                            </label>
+                            <div class="app-domain-row">
+                              <label class="check-label">
+                                <input type="checkbox" checked={!!editApps[i].domains[domain.name]} on:change={() => toggleEditAppDomain(editApps[i], domain.name)} /> {domain.name}
+                              </label>
+                              {#if editApps[i].domains[domain.name]}
+                                <div class="app-domain-detail">
+                                  <label class="inline-label">Paths
+                                    <input value={(editApps[i].domains[domain.name].paths || ['/']).join(', ')} placeholder="/api, /web" on:change={(e) => { editApps[i].domains[domain.name].paths = e.target.value.split(',').map(s => s.trim()).filter(Boolean); editApps = editApps; }} />
+                                  </label>
+                                  <label class="inline-label">Type
+                                    <select bind:value={editApps[i].domains[domain.name].type}>
+                                      <option value="primary">primary</option>
+                                      <option value="dependency">dependency</option>
+                                    </select>
+                                  </label>
+                                </div>
+                              {/if}
+                            </div>
                           {/each}
                         {/if}
                       </div>
@@ -1224,9 +1254,24 @@
                       <span class="muted">No domains configured yet. Add domains in the previous step.</span>
                     {:else}
                       {#each createDomains.filter(d => d.name.trim()) as domain}
-                        <label class="check-label">
-                          <input type="checkbox" checked={createApps[i].domains.includes(domain.name)} on:change={() => toggleAppDomain(createApps[i], domain.name)} /> {domain.name}
-                        </label>
+                        <div class="app-domain-row">
+                          <label class="check-label">
+                            <input type="checkbox" checked={!!createApps[i].domains[domain.name]} on:change={() => toggleAppDomain(createApps[i], domain.name)} /> {domain.name}
+                          </label>
+                          {#if createApps[i].domains[domain.name]}
+                            <div class="app-domain-detail">
+                              <label class="inline-label">Paths
+                                <input value={(createApps[i].domains[domain.name].paths || ['/']).join(', ')} placeholder="/api, /web" on:change={(e) => { createApps[i].domains[domain.name].paths = e.target.value.split(',').map(s => s.trim()).filter(Boolean); createApps = createApps; }} />
+                              </label>
+                              <label class="inline-label">Type
+                                <select bind:value={createApps[i].domains[domain.name].type}>
+                                  <option value="primary">primary</option>
+                                  <option value="dependency">dependency</option>
+                                </select>
+                              </label>
+                            </div>
+                          {/if}
+                        </div>
                       {/each}
                     {/if}
                   </div>
@@ -1512,6 +1557,12 @@
   .app-config-header { display: flex; justify-content: space-between; align-items: flex-end; padding: 0.6rem 0.8rem; background: #f0f0f0; border-radius: 6px 6px 0 0; }
   .app-label { margin: 0; font-weight: 600; }
   .app-config-body { padding: 0.6rem 0.8rem; }
+  .app-domain-row { margin: 0.3rem 0; }
+  .app-domain-detail { display: flex; gap: 0.8rem; margin-left: 1.5rem; margin-top: 0.2rem; }
+  .app-domain-detail input, .app-domain-detail select { width: auto; flex: 1; padding: 0.3rem 0.5rem; font-size: 0.85rem; }
+  .inline-label { display: inline-flex !important; align-items: center; gap: 0.4rem; font-weight: 400; font-size: 0.85rem; }
+  .inline-label select { width: auto; padding: 0.3rem 0.5rem; font-size: 0.85rem; }
+  .app-domain-entry { display: flex; align-items: center; gap: 0.5rem; margin: 0.2rem 0; }
 
   /* User Group card (wizard) */
   .user-group-card { background: #f8f9fa; border: 1px solid #ddd; border-radius: 6px; margin: 0.6rem 0; }
