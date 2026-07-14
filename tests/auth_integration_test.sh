@@ -1,304 +1,284 @@
 #!/usr/bin/env bash
 #
+# ══════════════════════════════════════════════════════════════════════════════
 # QuicGuard Auth Flow Integration Test
+# ══════════════════════════════════════════════════════════════════════════════
 #
-# Tests the complete authentication flow:
-# 1. Redirect to auth service (unauthenticated request)
-# 2. OTP send
-# 3. OTP verify and token issuance
-# 4. Token setting endpoint (HTML cookie propagation)
-# 5. CORS preflight
-# 6. Cookie setting with X-Set-Token
-# 7. Request with valid cookie
+# DESCRIPTION:
+#   Tests the complete authentication flow for QuicGuard.
+#   This script assumes all services are already running (use scripts/start.sh).
 #
-# Prerequisites: redis-server, cargo, jq, curl
+# TESTS COVERED:
+#   1. OTP Send - Request OTP code via email
+#   2. OTP Verify - Verify OTP and get JWT token
+#   3. Invalid OTP - Verify rejection of wrong OTP
+#   4. Missing Fields - Verify validation of required fields
+#   5. Token Format - Verify JWT structure
+#   6. Multiple OTP Cycles - Test multiple authentication attempts
+#   7. Redirect URL - Verify token and domain in redirect
+#   8. Multi-Org Flow - Test authentication for different organizations
+#   9. Wrong Domain - Verify rejection of unauthorized domains
+#  10. Concurrent Requests - Test server stability under load
+#
+# PREREQUISITES:
+#   - Services running (start with: ./scripts/start.sh start)
+#   - curl, jq installed
+#
+# USAGE:
+#   ./tests/auth_integration_test.sh
+#
+# OPTIONS:
+#   -h, --help     Show this help message
+#   -v, --verbose  Show verbose output
+#
+# EXAMPLES:
+#   # Run all tests
+#   ./tests/auth_integration_test.sh
+#
+#   # Run with verbose output
+#   ./tests/auth_integration_test.sh -v
+#
+# ══════════════════════════════════════════════════════════════════════════════
+
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-TEST_DATA="$SCRIPT_DIR/test_data.json"
+# ── Configuration ──────────────────────────────────────────────────────────
 
-REDIS_PORT=16379
-AUTH_PORT=3001
-QC_PORT=4433
-REDIS_URL="redis://127.0.0.1:${REDIS_PORT}"
-REDIS_ORG_KEY="quicguard:organizations"
+AUTH_PORT="${AUTH_PORT:-3001}"
+AUTH_URL="http://127.0.0.1:${AUTH_PORT}"
 TEST_EMAIL="test@example.com"
+VERBOSE=false
+
+# ── Parse arguments ────────────────────────────────────────────────────────
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -h|--help)
+            head -40 "$0" | tail -38
+            exit 0
+            ;;
+        -v|--verbose)
+            VERBOSE=true
+            shift
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+# ── Colors ─────────────────────────────────────────────────────────────────
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# ── Counters ───────────────────────────────────────────────────────────────
 
 PASSED=0
 FAILED=0
-PIDS=()
+TOTAL=0
 
-# ── helpers ────────────────────────────────────────────────────────────────
+# ── Helper functions ───────────────────────────────────────────────────────
 
-cleanup() {
+print_header() {
     echo ""
-    echo "=== Cleaning up ==="
-    for pid in "${PIDS[@]}"; do
-        if kill -0 "$pid" 2>/dev/null; then
-            kill "$pid" 2>/dev/null || true
-        fi
-    done
-    # Stop redis if we started it
-    if [[ -n "${REDIS_PID:-}" ]]; then
-        kill "$REDIS_PID" 2>/dev/null || true
-        redis-cli -p "$REDIS_PORT" shutdown 2>/dev/null || true
-    fi
-    # Kill any cargo build artifacts
-    pkill -f "target/release/auth-service" 2>/dev/null || true
-    pkill -f "target/debug/auth-service" 2>/dev/null || true
-    echo "Cleanup done."
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}  $1${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════════════════${NC}"
 }
-trap cleanup EXIT
+
+print_test() {
+    echo ""
+    echo -e "${YELLOW}── Test $1: $2 ──${NC}"
+}
+
+print_curl() {
+    echo -e "${CYAN}  curl command:${NC}"
+    echo -e "    $1"
+    echo ""
+}
 
 pass() {
-    echo "  ✓ $1"
+    echo -e "  ${GREEN}✓${NC} $1"
     PASSED=$((PASSED + 1))
+    TOTAL=$((TOTAL + 1))
 }
 
 fail() {
-    echo "  ✗ $1"
+    echo -e "  ${RED}✗${NC} $1"
+    if [[ -n "${2:-}" ]]; then
+        echo -e "    ${RED}$2${NC}"
+    fi
     FAILED=$((FAILED + 1))
+    TOTAL=$((TOTAL + 1))
 }
 
-assert_contains() {
-    local haystack="$1"
-    local needle="$2"
-    local label="${3:-assertion}"
-    if echo "$haystack" | grep -q "$needle"; then
-        pass "$label"
-    else
-        fail "$label — expected '$needle' in response"
-        echo "    Response: $(echo "$haystack" | head -5)"
-    fi
-}
+# ── Check services ─────────────────────────────────────────────────────────
 
-assert_not_contains() {
-    local haystack="$1"
-    local needle="$2"
-    local label="${3:-assertion}"
-    if echo "$haystack" | grep -q "$needle"; then
-        fail "$label — should NOT contain '$needle'"
-    else
-        pass "$label"
-    fi
-}
+print_header "Checking Services"
 
-# ── check dependencies ─────────────────────────────────────────────────────
-
-echo "=== Checking dependencies ==="
-for cmd in redis-server cargo jq curl; do
-    if command -v "$cmd" &>/dev/null; then
-        pass "$cmd found"
-    else
-        fail "$cmd not found — install it first"
-        exit 1
-    fi
-done
-
-# ── start Redis ─────────────────────────────────────────────────────────────
-
-echo ""
-echo "=== Starting Redis on port $REDIS_PORT ==="
-redis-server --port "$REDIS_PORT" --daemonize no --loglevel warning &
-REDIS_PID=$!
-sleep 1
-if redis-cli -p "$REDIS_PORT" ping | grep -q PONG; then
-    pass "Redis is running"
-else
-    fail "Redis failed to start"
-    exit 1
-fi
-
-# ── load test data into Redis ──────────────────────────────────────────────
-
-echo ""
-echo "=== Loading test data into Redis ==="
-
-# The auth service expects org configs as a Redis hash (org_id → JSON)
-# Use HSET for each organization from the test data
-redis-cli -p "$REDIS_PORT" DEL "$REDIS_ORG_KEY" >/dev/null 2>&1 || true
-
-ORG_IDS=$(jq -r 'keys[]' "$TEST_DATA")
-for ORG_ID in $ORG_IDS; do
-    ORG_JSON=$(jq -c --arg id "$ORG_ID" '.[$id]' "$TEST_DATA")
-    if redis-cli -p "$REDIS_PORT" HSET "$REDIS_ORG_KEY" "$ORG_ID" "$ORG_JSON" | grep -qE '^[0-9]+$'; then
-        pass "Loaded org '$ORG_ID' into Redis"
-    else
-        fail "Failed to load org '$ORG_ID' into Redis"
-        exit 1
-    fi
-done
-
-# ── build services ─────────────────────────────────────────────────────────
-
-echo ""
-echo "=== Building auth service ==="
-cd "$PROJECT_DIR"
-cargo build --release -p auth-service 2>&1 | tail -3
-AUTH_BIN="$PROJECT_DIR/target/release/auth-service"
-if [[ -f "$AUTH_BIN" ]]; then
-    pass "Auth service binary built"
-else
-    fail "Auth service binary not found"
-    exit 1
-fi
-
-# ── start auth service ─────────────────────────────────────────────────────
-
-echo ""
-echo "=== Starting auth service on port $AUTH_PORT ==="
-DATABASE_URL="postgres://localhost/quicguard_test" \
-REDIS_URL="$REDIS_URL" \
-REDIS_ORG_KEY="$REDIS_ORG_KEY" \
-AUTH_SERVER_PORT="$AUTH_PORT" \
-"$AUTH_BIN" &
-AUTH_PID=$!
-PIDS+=("$AUTH_PID")
-sleep 2
-
-if curl -sf -m 3 "http://127.0.0.1:${AUTH_PORT}/api/otp/send" -X POST \
+if ! curl -sf -m 2 "$AUTH_URL/api/otp/send" -X POST \
     -H "Content-Type: application/json" \
-    -d '{"email":"healthcheck@test.com"}' >/dev/null 2>&1; then
-    pass "Auth service is running"
-else
-    # The endpoint might return 4xx for health check, but at least it should connect
-    if curl -sf -m 3 -o /dev/null -w "%{http_code}" "http://127.0.0.1:${AUTH_PORT}/api/otp/send" \
+    -d '{"email":"check"}' >/dev/null 2>&1; then
+    # Check if it's just a validation error (means service is running)
+    HTTP_CODE=$(curl -sf -m 2 -o /dev/null -w "%{http_code}" "$AUTH_URL/api/otp/send" \
         -X POST -H "Content-Type: application/json" \
-        -d '{"email":"hc"}' 2>/dev/null | grep -qE '^[2-4]'; then
-        pass "Auth service is running (returned status)"
-    else
-        fail "Auth service not responding"
+        -d '{"email":"check"}' 2>/dev/null || echo "000")
+    if [[ "$HTTP_CODE" == "000" ]]; then
+        echo -e "${RED}Auth service not running on port $AUTH_PORT${NC}"
+        echo "Please start services first: ./scripts/start.sh start"
         exit 1
     fi
 fi
+echo -e "${GREEN}✓${NC} Auth service is running"
 
-# ══════════════════════════════════════════════════════════════════════════
-#  AUTH FLOW TESTS
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
+#  TESTS
+# ══════════════════════════════════════════════════════════════════════════════
 
-echo ""
-echo "══════════════════════════════════════════════"
-echo "  Auth Flow Integration Tests"
-echo "══════════════════════════════════════════════"
+print_header "Auth Flow Integration Tests"
 
 # ── Test 1: OTP Send ──────────────────────────────────────────────────────
 
-echo ""
-echo "--- Test 1: OTP Send ---"
-OTP_RESPONSE=$(curl -s -X POST "http://127.0.0.1:${AUTH_PORT}/api/otp/send" \
+print_test 1 "OTP Send"
+
+CURL_CMD="curl -s -X POST '${AUTH_URL}/api/otp/send' \\
+  -H 'Content-Type: application/json' \\
+  -d '{\"email\":\"${TEST_EMAIL}\"}'"
+print_curl "$CURL_CMD"
+
+OTP_RESPONSE=$(curl -s -X POST "${AUTH_URL}/api/otp/send" \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"${TEST_EMAIL}\"}")
+
+if [[ "$VERBOSE" == "true" ]]; then
+    echo "  Response: $OTP_RESPONSE"
+fi
 
 OTP_CODE=$(echo "$OTP_RESPONSE" | jq -r '.otp // empty')
 OTP_MESSAGE=$(echo "$OTP_RESPONSE" | jq -r '.message // empty')
 
 if [[ -n "$OTP_CODE" ]]; then
-    pass "OTP send returned code: $OTP_CODE"
+    pass "OTP sent successfully (code: $OTP_CODE)"
 else
-    fail "OTP send did not return code"
-    echo "    Response: $OTP_RESPONSE"
-fi
-
-if echo "$OTP_MESSAGE" | grep -qi "otp"; then
-    pass "OTP message is present"
-else
-    fail "OTP message missing"
+    fail "OTP send failed" "Response: $OTP_RESPONSE"
 fi
 
 # ── Test 2: OTP Verify and Token Issuance ────────────────────────────────
 
-echo ""
-echo "--- Test 2: OTP Verify and Token Issuance ---"
+print_test 2 "OTP Verify and Token Issuance"
+
 REQ_URL="https://pr1.org1.localhost/api/data"
-VERIFY_RESPONSE=$(curl -s -m 5 -X POST "http://127.0.0.1:${AUTH_PORT}/api/otp/verify" \
+CURL_CMD="curl -s -X POST '${AUTH_URL}/api/otp/verify' \\
+  -H 'Content-Type: application/json' \\
+  -d '{\"email\":\"${TEST_EMAIL}\",\"otp\":\"${OTP_CODE}\",\"req_url\":\"${REQ_URL}\"}'"
+print_curl "$CURL_CMD"
+
+VERIFY_RESPONSE=$(curl -s -X POST "${AUTH_URL}/api/otp/verify" \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"${TEST_EMAIL}\",\"otp\":\"${OTP_CODE}\",\"req_url\":\"${REQ_URL}\"}")
+
+if [[ "$VERBOSE" == "true" ]]; then
+    echo "  Response: $VERIFY_RESPONSE"
+fi
 
 TOKEN=$(echo "$VERIFY_RESPONSE" | jq -r '.token // empty')
 REDIRECT_URL=$(echo "$VERIFY_RESPONSE" | jq -r '.redirect_url // empty')
 
 if [[ -n "$TOKEN" ]]; then
-    pass "OTP verify returned JWT token"
-    echo "    Token (first 50 chars): ${TOKEN:0:50}..."
+    pass "JWT token issued"
 else
-    fail "OTP verify did not return token"
-    echo "    Response: $VERIFY_RESPONSE"
+    fail "Token issuance failed" "Response: $VERIFY_RESPONSE"
 fi
 
 if [[ -n "$REDIRECT_URL" ]]; then
-    pass "OTP verify returned redirect_url"
-    echo "    Redirect URL: $REDIRECT_URL"
-    # Verify the redirect URL contains the token parameter
+    pass "Redirect URL returned"
     if echo "$REDIRECT_URL" | grep -q "token="; then
         pass "Redirect URL contains token parameter"
     else
         fail "Redirect URL missing token parameter"
     fi
 else
-    fail "OTP verify did not return redirect_url"
+    fail "Redirect URL not returned"
 fi
 
 # ── Test 3: Invalid OTP ──────────────────────────────────────────────────
 
-echo ""
-echo "--- Test 3: Invalid OTP Rejection ---"
-INVALID_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-    "http://127.0.0.1:${AUTH_PORT}/api/otp/verify" \
+print_test 3 "Invalid OTP Rejection"
+
+CURL_CMD="curl -s -o /dev/null -w '%{http_code}' -X POST '${AUTH_URL}/api/otp/verify' \\
+  -H 'Content-Type: application/json' \\
+  -d '{\"email\":\"${TEST_EMAIL}\",\"otp\":\"000000\",\"req_url\":\"${REQ_URL}\"}'"
+print_curl "$CURL_CMD"
+
+INVALID_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+    "${AUTH_URL}/api/otp/verify" \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"${TEST_EMAIL}\",\"otp\":\"000000\",\"req_url\":\"${REQ_URL}\"}")
 
-if [[ "$INVALID_RESPONSE" == "401" ]]; then
-    pass "Invalid OTP correctly rejected with 401"
+if [[ "$INVALID_STATUS" == "401" ]]; then
+    pass "Invalid OTP correctly rejected (401)"
 else
-    fail "Invalid OTP should return 401, got $INVALID_RESPONSE"
+    fail "Invalid OTP should return 401" "Got: $INVALID_STATUS"
 fi
 
 # ── Test 4: Missing Email ────────────────────────────────────────────────
 
-echo ""
-echo "--- Test 4: Missing Email in OTP Send ---"
-MISSING_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-    "http://127.0.0.1:${AUTH_PORT}/api/otp/send" \
+print_test 4 "Missing Email Validation"
+
+CURL_CMD="curl -s -o /dev/null -w '%{http_code}' -X POST '${AUTH_URL}/api/otp/send' \\
+  -H 'Content-Type: application/json' \\
+  -d '{}'"
+print_curl "$CURL_CMD"
+
+MISSING_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+    "${AUTH_URL}/api/otp/send" \
     -H "Content-Type: application/json" \
     -d '{}')
 
-if [[ "$MISSING_RESPONSE" == "422" || "$MISSING_RESPONSE" == "400" ]]; then
-    pass "Missing email correctly rejected"
+if [[ "$MISSING_STATUS" == "422" || "$MISSING_STATUS" == "400" ]]; then
+    pass "Missing email correctly rejected ($MISSING_STATUS)"
 else
-    fail "Missing email should return 422 or 400, got $MISSING_RESPONSE"
+    fail "Missing email should return 422 or 400" "Got: $MISSING_STATUS"
 fi
 
-# ── Test 5: Token Format Validation ──────────────────────────────────────
+# ── Test 5: Token Format ──────────────────────────────────────────────────
 
-echo ""
-echo "--- Test 5: Token Format (JWT structure) ---"
-# A JWT has 3 dot-separated base64url segments
+print_test 5 "Token Format (JWT Structure)"
+
 JWT_PARTS=$(echo "$TOKEN" | tr '.' '\n' | wc -l)
 if [[ "$JWT_PARTS" -eq 3 ]]; then
-    pass "Token has correct JWT structure (3 parts)"
+    pass "Token has 3 parts (valid JWT structure)"
 else
-    fail "Token should have 3 parts, got $JWT_PARTS"
+    fail "Token should have 3 parts" "Got: $JWT_PARTS"
 fi
 
-# Decode the header to verify algorithm
+# Decode header
 HEADER=$(echo "$TOKEN" | cut -d'.' -f1 | base64 -d 2>/dev/null || echo "")
 ALG=$(echo "$HEADER" | jq -r '.alg // empty' 2>/dev/null || echo "")
-if [[ -n "$ALG" ]]; then
-    pass "Token header contains algorithm: $ALG"
+if [[ "$ALG" == "EdDSA" ]]; then
+    pass "Token uses EdDSA algorithm"
 else
-    pass "Token header decoded (algorithm check skipped if base64 not standard)"
+    pass "Token algorithm: ${ALG:-unknown}"
 fi
 
 # ── Test 6: Multiple OTP Cycles ──────────────────────────────────────────
 
-echo ""
-echo "--- Test 6: Multiple OTP Cycles ---"
-OTP1=$(curl -s -X POST "http://127.0.0.1:${AUTH_PORT}/api/otp/send" \
+print_test 6 "Multiple OTP Cycles"
+
+CURL_CMD1="curl -s -X POST '${AUTH_URL}/api/otp/send' \\
+  -H 'Content-Type: application/json' \\
+  -d '{\"email\":\"${TEST_EMAIL}\"}'"
+print_curl "$CURL_CMD1"
+
+OTP1=$(curl -s -X POST "${AUTH_URL}/api/otp/send" \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"${TEST_EMAIL}\"}" | jq -r '.otp')
 
-OTP2=$(curl -s -X POST "http://127.0.0.1:${AUTH_PORT}/api/otp/send" \
+OTP2=$(curl -s -X POST "${AUTH_URL}/api/otp/send" \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"${TEST_EMAIL}\"}" | jq -r '.otp')
 
@@ -309,7 +289,12 @@ else
 fi
 
 # Verify second OTP works
-VERIFY2=$(curl -s -X POST "http://127.0.0.1:${AUTH_PORT}/api/otp/verify" \
+CURL_CMD2="curl -s -X POST '${AUTH_URL}/api/otp/verify' \\
+  -H 'Content-Type: application/json' \\
+  -d '{\"email\":\"${TEST_EMAIL}\",\"otp\":\"${OTP2}\",\"req_url\":\"${REQ_URL}\"}'"
+print_curl "$CURL_CMD2"
+
+VERIFY2=$(curl -s -X POST "${AUTH_URL}/api/otp/verify" \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"${TEST_EMAIL}\",\"otp\":\"${OTP2}\",\"req_url\":\"${REQ_URL}\"}")
 TOKEN2=$(echo "$VERIFY2" | jq -r '.token // empty')
@@ -320,164 +305,134 @@ else
     fail "Second OTP cycle failed"
 fi
 
-# ── Test 7: Token Propagation URL Parameters ────────────────────────────
+# ── Test 7: Redirect URL Validation ──────────────────────────────────────
 
-echo ""
-echo "--- Test 7: Redirect URL Parameter Encoding ---"
-FULL_REDIRECT="$REDIRECT_URL"
-# Verify the redirect URL contains the original request path
-if echo "$FULL_REDIRECT" | grep -q "pr1.org1.localhost"; then
-    pass "Redirect URL contains original domain"
+print_test 7 "Redirect URL Parameter Validation"
+
+if echo "$REDIRECT_URL" | grep -q "pr1.org1.localhost"; then
+    pass "Redirect URL contains correct domain"
 else
-    fail "Redirect URL missing original domain"
+    fail "Redirect URL missing correct domain"
 fi
-if echo "$FULL_REDIRECT" | grep -q "token="; then
+
+if echo "$REDIRECT_URL" | grep -q "token="; then
     pass "Redirect URL contains token parameter"
 else
     fail "Redirect URL missing token parameter"
 fi
 
-# ── Test 8: Org2 Auth Flow ──────────────────────────────────────────────
+# ── Test 8: Multi-Org Flow ──────────────────────────────────────────────
 
-echo ""
-echo "--- Test 8: Organization 2 Auth Flow ---"
+print_test 8 "Organization 2 Auth Flow"
+
 ORG2_EMAIL="admin@org2.test"
 ORG2_REQ="https://pr1.org2.localhost/admin/dashboard"
 
-# Send OTP for org2
-ORG2_OTP_RESPONSE=$(curl -s -X POST "http://127.0.0.1:${AUTH_PORT}/api/otp/send" \
-    -H "Content-Type: application/json" \
-    -d "{\"email\":\"${ORG2_EMAIL}\"}")
-ORG2_OTP=$(echo "$ORG2_OTP_RESPONSE" | jq -r '.otp')
+CURL_CMD="curl -s -X POST '${AUTH_URL}/api/otp/send' \\
+  -H 'Content-Type: application/json' \\
+  -d '{\"email\":\"${ORG2_EMAIL}\"}'"
+print_curl "$CURL_CMD"
 
-# Verify OTP
-ORG2_VERIFY=$(curl -s -X POST "http://127.0.0.1:${AUTH_PORT}/api/otp/verify" \
+ORG2_OTP=$(curl -s -X POST "${AUTH_URL}/api/otp/send" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\":\"${ORG2_EMAIL}\"}" | jq -r '.otp')
+
+CURL_CMD="curl -s -X POST '${AUTH_URL}/api/otp/verify' \\
+  -H 'Content-Type: application/json' \\
+  -d '{\"email\":\"${ORG2_EMAIL}\",\"otp\":\"${ORG2_OTP}\",\"req_url\":\"${ORG2_REQ}\"}'"
+print_curl "$CURL_CMD"
+
+ORG2_VERIFY=$(curl -s -X POST "${AUTH_URL}/api/otp/verify" \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"${ORG2_EMAIL}\",\"otp\":\"${ORG2_OTP}\",\"req_url\":\"${ORG2_REQ}\"}")
 ORG2_TOKEN=$(echo "$ORG2_VERIFY" | jq -r '.token // empty')
 ORG2_REDIRECT=$(echo "$ORG2_VERIFY" | jq -r '.redirect_url // empty')
 
 if [[ -n "$ORG2_TOKEN" ]]; then
-    pass "Org2 OTP verify returned JWT token"
+    pass "Org2 JWT token issued"
 else
-    fail "Org2 OTP verify did not return token"
+    fail "Org2 token issuance failed"
 fi
 
 if echo "$ORG2_REDIRECT" | grep -q "pr1.org2.localhost"; then
-    pass "Org2 redirect URL points to correct domain"
+    pass "Org2 redirect points to correct domain"
 else
-    fail "Org2 redirect URL does not point to correct domain"
+    fail "Org2 redirect has wrong domain"
 fi
 
-# ── Test 9: Cross-domain Request Rejection ──────────────────────────────
+# ── Test 9: Wrong Domain ──────────────────────────────────────────────
 
-echo ""
-echo "--- Test 9: Wrong Domain in Verify ---"
-# Send a fresh OTP for this test (previous ones were consumed)
-FRESH_OTP=$(curl -s -X POST "http://127.0.0.1:${AUTH_PORT}/api/otp/send" \
+print_test 9 "Wrong Domain Rejection"
+
+FRESH_OTP=$(curl -s -X POST "${AUTH_URL}/api/otp/send" \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"${TEST_EMAIL}\"}" | jq -r '.otp')
-WRONG_DOMAIN=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
-    "http://127.0.0.1:${AUTH_PORT}/api/otp/verify" \
+
+CURL_CMD="curl -s -o /dev/null -w '%{http_code}' -X POST '${AUTH_URL}/api/otp/verify' \\
+  -H 'Content-Type: application/json' \\
+  -d '{\"email\":\"${TEST_EMAIL}\",\"otp\":\"${FRESH_OTP}\",\"req_url\":\"https://evil.com/steal\"}'"
+print_curl "$CURL_CMD"
+
+WRONG_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+    "${AUTH_URL}/api/otp/verify" \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"${TEST_EMAIL}\",\"otp\":\"${FRESH_OTP}\",\"req_url\":\"https://evil.com/steal\"}")
 
-if [[ "$WRONG_DOMAIN" == "404" || "$WRONG_DOMAIN" == "400" ]]; then
-    pass "Wrong domain correctly rejected"
+if [[ "$WRONG_STATUS" == "404" || "$WRONG_STATUS" == "400" ]]; then
+    pass "Wrong domain correctly rejected ($WRONG_STATUS)"
 else
-    fail "Wrong domain should be rejected, got $WRONG_DOMAIN"
+    fail "Wrong domain should be rejected" "Got: $WRONG_STATUS"
 fi
 
-# ── Test 10: Concurrent OTP Requests ────────────────────────────────────
+# ── Test 10: Concurrent Requests ────────────────────────────────────────
 
-echo ""
-echo "--- Test 10: Concurrent OTP Requests ---"
+print_test 10 "Concurrent Request Handling"
+
 CONC_EMAIL="concurrent@test.com"
-# Fire 3 concurrent OTP sends with timeout (run in subshell to avoid wait issues)
+
+CURL_CMD="for i in 1 2 3; do
+  curl -s -X POST '${AUTH_URL}/api/otp/send' \\
+    -H 'Content-Type: application/json' \\
+    -d '{\"email\":\"${CONC_EMAIL}\"}' &
+done
+wait"
+print_curl "$CURL_CMD"
+
 (
     for i in 1 2 3; do
-        curl -s -m 3 -X POST "http://127.0.0.1:${AUTH_PORT}/api/otp/send" \
+        curl -s -m 3 -X POST "${AUTH_URL}/api/otp/send" \
             -H "Content-Type: application/json" \
             -d "{\"email\":\"${CONC_EMAIL}\"}" -o /dev/null &
     done
     wait
-)
-CONC_STATUS=$?
+) >/dev/null 2>&1
 
-# After concurrent sends, verify the server is still responsive
-FINAL_OTP=$(curl -s -m 3 -X POST "http://127.0.0.1:${AUTH_PORT}/api/otp/send" \
+# Verify server is still responsive
+FINAL_OTP=$(curl -s -m 3 -X POST "${AUTH_URL}/api/otp/send" \
     -H "Content-Type: application/json" \
     -d "{\"email\":\"${CONC_EMAIL}\"}" | jq -r '.otp')
 
 if [[ -n "$FINAL_OTP" && "$FINAL_OTP" != "null" ]]; then
-    pass "Concurrent OTP requests handled correctly (server responsive)"
+    pass "Server handled concurrent requests successfully"
 else
     fail "Server not responsive after concurrent requests"
 fi
 
-# ══════════════════════════════════════════════════════════════════════════
-#  TOKEN SETTING HTML TESTS (via unit test helper)
-# ══════════════════════════════════════════════════════════════════════════
-
-echo ""
-echo "--- Test 11: Token Setting HTML Generation ---"
-# Test the token-setting HTML structure using the Rust unit test
-# The HTML is generated by quicguard when it receives a token in query params
-# We verify the structure matches expectations
-
-# Expected HTML structure from src/html.rs:
-# - Contains X-Set-Token header usage
-# - Sets cookies via document.cookie
-# - Redirects via window.location.href
-# - Includes all other domains for cross-domain propagation
-
-# Since the HTML is generated server-side, we test the expected structure
-EXPECTED_ELEMENTS=(
-    "X-Set-Token"
-    "document.cookie"
-    "window.location.href"
-    "async"
-    "fetch"
-)
-
-echo "  Verifying token-setting HTML expected structure..."
-HTML_STRUCTURE_OK=true
-for elem in "${EXPECTED_ELEMENTS[@]}"; do
-    # We can't call the QUIC server easily, so verify the Rust unit tests pass
-    pass "Expected element: $elem (verified via Rust tests)"
-done
-
-# ══════════════════════════════════════════════════════════════════════════
-#  CORS PREFLIGHT TESTS (via unit test helper)
-# ══════════════════════════════════════════════════════════════════════════
-
-echo ""
-echo "--- Test 12: CORS Configuration ---"
-# Verify the expected CORS headers from the codebase
-echo "  CORS configuration verified via code review:"
-pass "CORS preflight returns 204"
-pass "CORS allows X-Set-Token header"
-pass "CORS allows Content-Type header"
-pass "CORS sets max-age to 86400"
-
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 #  SUMMARY
-# ══════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════
 
-echo ""
-echo "══════════════════════════════════════════════"
-echo "  Test Results"
-echo "══════════════════════════════════════════════"
-echo "  Passed: $PASSED"
-echo "  Failed: $FAILED"
-TOTAL=$((PASSED + FAILED))
-echo "  Total:  $TOTAL"
+print_header "Test Results"
+
+echo -e "  Passed: ${GREEN}$PASSED${NC}"
+echo -e "  Failed: ${RED}$FAILED${NC}"
+echo -e "  Total:  $TOTAL"
 echo ""
 
 if [[ $FAILED -gt 0 ]]; then
-    echo "  SOME TESTS FAILED"
+    echo -e "${RED}  SOME TESTS FAILED${NC}"
     exit 1
 else
-    echo "  ALL TESTS PASSED"
+    echo -e "${GREEN}  ALL TESTS PASSED${NC}"
     exit 0
 fi

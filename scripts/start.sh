@@ -1,53 +1,121 @@
-#!/bin/bash
-
+#!/usr/bin/env bash
+#
+# ══════════════════════════════════════════════════════════════════════════════
 # QuicGuard System Startup Script
-# Starts all services: Redis, Dashboard, Auth Service, QuicGuard
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# DESCRIPTION:
+#   Starts all QuicGuard services and loads sample data for testing.
+#
+# SERVICES:
+#   - Redis (port 6379)
+#   - Dashboard Backend (port 3000)
+#   - Auth Service (port 3001)
+#   - QuicGuard Proxy (port 4433)
+#
+# PREREQUISITES:
+#   - redis-server installed
+#   - cargo (Rust toolchain)
+#   - jq
+#   - curl
+#
+# USAGE:
+#   ./scripts/start.sh [command]
+#
+# COMMANDS:
+#   start      Start all services (default)
+#   stop       Stop all services
+#   restart    Restart all services
+#   status     Show service status
+#   logs       Tail all service logs
+#   load-data  Load sample data into Redis
+#   help       Show this help message
+#
+# EXAMPLES:
+#   # Start all services with sample data
+#   ./scripts/start.sh start
+#
+#   # Just load sample data (services must be running)
+#   ./scripts/start.sh load-data
+#
+#   # Check what's running
+#   ./scripts/start.sh status
+#
+#   # View all logs
+#   ./scripts/start.sh logs
+#
+#   # Stop everything
+#   ./scripts/start.sh stop
+#
+# SAMPLE DATA:
+#   The script loads test organizations from tests/test_data.json:
+#   - org1: Organization 1 (pr1.org1.localhost, pr2.org1.localhost, sec1.org1.localhost)
+#     - Apps: web-app, mobile-app
+#   - org2: Organization 2 (pr1.org2.localhost, pr2.org2.localhost, sec1.org2.localhost)
+#     - Apps: admin-panel, public-site
+#
+# ══════════════════════════════════════════════════════════════════════════════
 
-set -e
+set -euo pipefail
 
-# Colors for output
+# ── Configuration ──────────────────────────────────────────────────────────
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+LOG_DIR="$PROJECT_ROOT/logs"
+PID_DIR="$PROJECT_ROOT/.pids"
+TEST_DATA="$PROJECT_ROOT/tests/test_data.json"
+
+REDIS_PORT="${REDIS_PORT:-6379}"
+DASHBOARD_PORT="${DASHBOARD_PORT:-3000}"
+AUTH_PORT="${AUTH_PORT:-3001}"
+QC_PORT="${QC_PORT:-4433}"
+
+REDIS_URL="redis://127.0.0.1:${REDIS_PORT}"
+REDIS_ORG_KEY="${REDIS_ORG_KEY:-quicguard:organizations}"
+
+# ── Colors ─────────────────────────────────────────────────────────────────
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 
-# Project root
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# ── Helper functions ───────────────────────────────────────────────────────
 
-# Log directory
-LOG_DIR="$PROJECT_ROOT/logs"
-mkdir -p "$LOG_DIR"
+print_header() {
+    echo ""
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════════════════${NC}"
+    echo -e "${CYAN}  $1${NC}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════════════════${NC}"
+}
 
-# PID file directory
-PID_DIR="$PROJECT_ROOT/.pids"
-mkdir -p "$PID_DIR"
-
-# Function to print status
 print_status() {
-    echo -e "${GREEN}[✓]${NC} $1"
+    echo -e "  ${GREEN}✓${NC} $1"
 }
 
 print_warning() {
-    echo -e "${YELLOW}[!]${NC} $1"
+    echo -e "  ${YELLOW}!${NC} $1"
 }
 
 print_error() {
-    echo -e "${RED}[✗]${NC} $1"
+    echo -e "  ${RED}✗${NC} $1"
 }
 
-# Function to check if a port is in use
 check_port() {
-    lsof -i:$1 >/dev/null 2>&1
+    lsof -i:"$1" >/dev/null 2>&1 || \
+    ss -tlnp 2>/dev/null | grep -q ":$1 " || \
+    netstat -tlnp 2>/dev/null | grep -q ":$1 "
 }
 
-# Function to wait for a service
-wait_for_service() {
+wait_for_port() {
     local port=$1
     local service=$2
     local max_wait=${3:-30}
     local count=0
 
-    while ! check_port $port; do
+    while ! check_port "$port"; do
         sleep 1
         count=$((count + 1))
         if [ $count -ge $max_wait ]; then
@@ -58,60 +126,113 @@ wait_for_service() {
     print_status "$service is running on port $port"
 }
 
-# Function to stop a service
-stop_service() {
+stop_pid() {
     local pid_file=$1
     local service=$2
 
     if [ -f "$pid_file" ]; then
-        local pid=$(cat "$pid_file")
+        local pid
+        pid=$(cat "$pid_file")
         if kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null || true
-            print_status "Stopped $service (PID: $pid)"
+            sleep 1
+            print_status "Stopped $service"
         fi
         rm -f "$pid_file"
     fi
 }
 
-# Cleanup function
 cleanup() {
     echo ""
-    print_warning "Shutting down all services..."
-    stop_service "$PID_DIR/redis.pid" "Redis"
-    stop_service "$PID_DIR/dashboard.pid" "Dashboard"
-    stop_service "$PID_DIR/auth.pid" "Auth Service"
-    stop_service "$PID_DIR/quicguard.pid" "QuicGuard"
+    print_warning "Shutting down services..."
+    stop_pid "$PID_DIR/quicguard.pid" "QuicGuard"
+    stop_pid "$PID_DIR/auth.pid" "Auth Service"
+    stop_pid "$PID_DIR/dashboard.pid" "Dashboard"
     print_status "All services stopped"
     exit 0
 }
 
-# Trap cleanup on exit
 trap cleanup SIGINT SIGTERM
 
-# Parse command line arguments
-ACTION=${1:-start}
+# ── Help ───────────────────────────────────────────────────────────────────
+
+show_help() {
+    head -55 "$0" | tail -50
+}
+
+# ── Load sample data ──────────────────────────────────────────────────────
+
+load_sample_data() {
+    print_header "Loading Sample Data"
+
+    if [[ ! -f "$TEST_DATA" ]]; then
+        print_error "Test data file not found: $TEST_DATA"
+        return 1
+    fi
+
+    # Check Redis is running
+    if ! redis-cli -p "$REDIS_PORT" ping >/dev/null 2>&1; then
+        print_error "Redis not running on port $REDIS_PORT"
+        return 1
+    fi
+
+    # Clear existing data
+    redis-cli -p "$REDIS_PORT" DEL "$REDIS_ORG_KEY" >/dev/null 2>&1 || true
+    print_status "Cleared existing org data"
+
+    # Load each organization
+    local org_ids
+    org_ids=$(jq -r 'keys[]' "$TEST_DATA")
+
+    for org_id in $org_ids; do
+        local org_json
+        org_json=$(jq -c --arg id "$org_id" '.[$id]' "$TEST_DATA")
+        if redis-cli -p "$REDIS_PORT" HSET "$REDIS_ORG_KEY" "$org_id" "$org_json" | grep -qE '^[0-9]+$'; then
+            print_status "Loaded org '$org_id'"
+        else
+            print_error "Failed to load org '$org_id'"
+            return 1
+        fi
+    done
+
+    echo ""
+    echo -e "${GREEN}Sample data loaded successfully!${NC}"
+    echo ""
+    echo "Organizations:"
+    echo "  - org1: pr1.org1.localhost, pr2.org1.localhost, sec1.org1.localhost"
+    echo "  - org2: pr1.org2.localhost, pr2.org2.localhost, sec1.org2.localhost"
+}
+
+# ── Main commands ──────────────────────────────────────────────────────────
+
+ACTION=${1:-help}
 
 case $ACTION in
     start)
-        echo "=========================================="
-        echo "  QuicGuard System Startup"
-        echo "=========================================="
-        echo ""
+        print_header "QuicGuard System Startup"
+
+        # Create directories
+        mkdir -p "$LOG_DIR" "$PID_DIR"
 
         # 1. Start Redis
         print_warning "Starting Redis..."
-        if check_port 6379; then
-            print_warning "Redis is already running on port 6379"
+        if check_port "$REDIS_PORT"; then
+            print_warning "Redis already running on port $REDIS_PORT"
         else
-            redis-server --daemonize yes --logfile "$LOG_DIR/redis.log" --port 6379
+            redis-server --port "$REDIS_PORT" --daemonize yes \
+                --logfile "$LOG_DIR/redis.log" \
+                --save "" 2>/dev/null
             sleep 1
-            if check_port 6379; then
-                print_status "Redis started on port 6379"
+            if check_port "$REDIS_PORT"; then
+                print_status "Redis started on port $REDIS_PORT"
             else
                 print_error "Failed to start Redis"
                 exit 1
             fi
         fi
+
+        # Load sample data
+        load_sample_data
 
         # 2. Build and start Dashboard
         print_warning "Building Dashboard..."
@@ -120,16 +241,16 @@ case $ACTION in
         print_status "Dashboard built"
 
         print_warning "Starting Dashboard..."
-        if check_port 3000; then
-            print_warning "Dashboard is already running on port 3000"
+        if check_port "$DASHBOARD_PORT"; then
+            print_warning "Dashboard already running on port $DASHBOARD_PORT"
         else
             DATABASE_URL="${DATABASE_URL:-postgres://postgres:postgres@localhost/quicguard}" \
-            REDIS_URL="${REDIS_URL:-redis://127.0.0.1:6379}" \
+            REDIS_URL="$REDIS_URL" \
             JWT_SECRET="${JWT_SECRET:-secret}" \
             RUST_LOG=info \
             ./target/release/dashboard > "$LOG_DIR/dashboard.log" 2>&1 &
             echo $! > "$PID_DIR/dashboard.pid"
-            wait_for_service 3000 "Dashboard"
+            wait_for_port "$DASHBOARD_PORT" "Dashboard"
         fi
 
         # 3. Build and start Auth Service
@@ -139,16 +260,16 @@ case $ACTION in
         print_status "Auth Service built"
 
         print_warning "Starting Auth Service..."
-        if check_port 3001; then
-            print_warning "Auth Service is already running on port 3001"
+        if check_port "$AUTH_PORT"; then
+            print_warning "Auth Service already running on port $AUTH_PORT"
         else
-            REDIS_URL="${REDIS_URL:-redis://127.0.0.1:6379}" \
-            REDIS_ORG_KEY="${REDIS_ORG_KEY:-quicguard:organizations}" \
-            AUTH_SERVER_PORT=3001 \
+            REDIS_URL="$REDIS_URL" \
+            REDIS_ORG_KEY="$REDIS_ORG_KEY" \
+            AUTH_SERVER_PORT="$AUTH_PORT" \
             RUST_LOG=info \
             ./target/release/auth-service > "$LOG_DIR/auth.log" 2>&1 &
             echo $! > "$PID_DIR/auth.pid"
-            wait_for_service 3001 "Auth Service"
+            wait_for_port "$AUTH_PORT" "Auth Service"
         fi
 
         # 4. Build and start QuicGuard
@@ -158,40 +279,46 @@ case $ACTION in
         print_status "QuicGuard built"
 
         print_warning "Starting QuicGuard..."
-        if check_port 4433; then
-            print_warning "QuicGuard is already running on port 4433"
+        if check_port "$QC_PORT"; then
+            print_warning "QuicGuard already running on port $QC_PORT"
         else
             RUST_LOG=info \
             ./target/release/quicguard > "$LOG_DIR/quicguard.log" 2>&1 &
             echo $! > "$PID_DIR/quicguard.pid"
-            wait_for_service 4433 "QuicGuard"
+            wait_for_port "$QC_PORT" "QuicGuard"
         fi
 
         echo ""
-        echo "=========================================="
-        echo "  All services started successfully!"
-        echo "=========================================="
+        print_header "All Services Started"
         echo ""
         echo "Services:"
-        echo "  - Redis:        http://localhost:6379"
-        echo "  - Dashboard:    http://localhost:3000"
-        echo "  - Auth Service: http://localhost:3001"
-        echo "  - QuicGuard:    http://localhost:4433"
+        echo -e "  ${GREEN}✓${NC} Redis:        http://localhost:$REDIS_PORT"
+        echo -e "  ${GREEN}✓${NC} Dashboard:    http://localhost:$DASHBOARD_PORT"
+        echo -e "  ${GREEN}✓${NC} Auth Service: http://localhost:$AUTH_PORT"
+        echo -e "  ${GREEN}✓${NC} QuicGuard:    http://localhost:$QC_PORT"
         echo ""
-        echo "Logs: $LOG_DIR/"
-        echo "PIDs: $PID_DIR/"
+        echo "Sample Data:"
+        echo "  - org1: pr1.org1.localhost, pr2.org1.localhost, sec1.org1.localhost"
+        echo "  - org2: pr1.org2.localhost, pr2.org2.localhost, sec1.org2.localhost"
         echo ""
-        echo "To stop all services: $0 stop"
-        echo "To view logs: $0 logs"
+        echo "Quick Links:"
+        echo "  - Dashboard:    http://localhost:$DASHBOARD_PORT"
+        echo "  - Auth Login:   http://localhost:$AUTH_PORT"
+        echo ""
+        echo "Commands:"
+        echo "  - Stop:         ./scripts/start.sh stop"
+        echo "  - Status:       ./scripts/start.sh status"
+        echo "  - Logs:         ./scripts/start.sh logs"
+        echo "  - Run Tests:    ./tests/auth_integration_test.sh"
         ;;
 
     stop)
-        echo "Stopping all services..."
-        stop_service "$PID_DIR/quicguard.pid" "QuicGuard"
-        stop_service "$PID_DIR/auth.pid" "Auth Service"
-        stop_service "$PID_DIR/dashboard.pid" "Dashboard"
-        # Don't stop Redis as it might be used by other projects
-        print_warning "Note: Redis was not stopped (might be used by other projects)"
+        echo "Stopping services..."
+        stop_pid "$PID_DIR/quicguard.pid" "QuicGuard"
+        stop_pid "$PID_DIR/auth.pid" "Auth Service"
+        stop_pid "$PID_DIR/dashboard.pid" "Dashboard"
+        print_warning "Redis was not stopped (might be used by other projects)"
+        echo ""
         print_status "All services stopped"
         ;;
 
@@ -202,37 +329,62 @@ case $ACTION in
         ;;
 
     status)
-        echo "Service Status:"
-        echo "---------------"
-        if check_port 6379; then
-            print_status "Redis: Running"
+        print_header "Service Status"
+        echo ""
+
+        if check_port "$REDIS_PORT"; then
+            echo -e "  ${GREEN}✓${NC} Redis:        Running (port $REDIS_PORT)"
         else
-            print_error "Redis: Not running"
+            echo -e "  ${RED}✗${NC} Redis:        Not running"
         fi
-        if check_port 3000; then
-            print_status "Dashboard: Running"
+
+        if check_port "$DASHBOARD_PORT"; then
+            echo -e "  ${GREEN}✓${NC} Dashboard:    Running (port $DASHBOARD_PORT)"
         else
-            print_error "Dashboard: Not running"
+            echo -e "  ${RED}✗${NC} Dashboard:    Not running"
         fi
-        if check_port 3001; then
-            print_status "Auth Service: Running"
+
+        if check_port "$AUTH_PORT"; then
+            echo -e "  ${GREEN}✓${NC} Auth Service: Running (port $AUTH_PORT)"
         else
-            print_error "Auth Service: Not running"
+            echo -e "  ${RED}✗${NC} Auth Service: Not running"
         fi
-        if check_port 4433; then
-            print_status "QuicGuard: Running"
+
+        if check_port "$QC_PORT"; then
+            echo -e "  ${GREEN}✓${NC} QuicGuard:    Running (port $QC_PORT)"
         else
-            print_error "QuicGuard: Not running"
+            echo -e "  ${RED}✗${NC} QuicGuard:    Not running"
+        fi
+
+        echo ""
+        echo "Sample Data in Redis:"
+        if redis-cli -p "$REDIS_PORT" HLEN "$REDIS_ORG_KEY" >/dev/null 2>&1; then
+            local count
+            count=$(redis-cli -p "$REDIS_PORT" HLEN "$REDIS_ORG_KEY" 2>/dev/null || echo "0")
+            echo -e "  ${GREEN}✓${NC} $count organizations loaded"
+        else
+            echo -e "  ${RED}✗${NC} No data found"
         fi
         ;;
 
     logs)
+        print_header "Service Logs"
         echo "Tailing logs (Ctrl+C to stop)..."
-        tail -f "$LOG_DIR"/*.log
+        echo ""
+        tail -f "$LOG_DIR"/*.log 2>/dev/null || echo "No log files found"
+        ;;
+
+    load-data)
+        load_sample_data
+        ;;
+
+    help|--help|-h)
+        show_help
         ;;
 
     *)
-        echo "Usage: $0 {start|stop|restart|status|logs}"
+        echo "Unknown command: $ACTION"
+        echo "Run '$0 help' for usage information"
         exit 1
         ;;
 esac
