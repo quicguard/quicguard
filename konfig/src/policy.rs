@@ -20,20 +20,9 @@ pub enum PolicyEffect {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyRule {
-    pub resource: ResourcePattern,
     pub methods: HashSet<HttpMethod>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ResourcePattern {
-    /// Exact match: "/api/v1/users"
-    Exact(String),
-    /// Prefix match: "/api/v1/"
-    Prefix(String),
-    /// Glob match: "/api/v1/users/*"
-    Glob(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Hash, Eq, PartialEq)]
@@ -86,22 +75,11 @@ pub struct TokenClaims {
 }
 
 impl Policy {
-    pub fn matches_request(&self, method: &HttpMethod, path: &str, claims: &TokenClaims) -> bool {
+    pub fn matches_request(&self, method: &HttpMethod, claims: &TokenClaims) -> bool {
         self.rules.iter().any(|rule| {
             rule.methods.contains(method)
-                && rule.resource.matches(path)
                 && rule.conditions.iter().all(|c| c.evaluate(claims))
         })
-    }
-}
-
-impl ResourcePattern {
-    pub fn matches(&self, path: &str) -> bool {
-        match self {
-            ResourcePattern::Exact(exact) => path == exact,
-            ResourcePattern::Prefix(prefix) => path.starts_with(prefix),
-            ResourcePattern::Glob(glob) => glob_match(glob, path),
-        }
     }
 }
 
@@ -126,31 +104,4 @@ impl Condition {
             None => false,
         }
     }
-}
-
-fn glob_match(pattern: &str, text: &str) -> bool {
-    let pattern: Vec<char> = pattern.chars().collect();
-    let text: Vec<char> = text.chars().collect();
-    glob_match_inner(&pattern, &text)
-}
-
-fn glob_match_inner(pattern: &[char], text: &[char]) -> bool {
-    if pattern.is_empty() {
-        return text.is_empty();
-    }
-
-    if pattern[0] == '*' {
-        for i in 0..=text.len() {
-            if glob_match_inner(&pattern[1..], &text[i..]) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    if !text.is_empty() && (pattern[0] == '?' || pattern[0] == text[0]) {
-        return glob_match_inner(&pattern[1..], &text[1..]);
-    }
-
-    false
 }

@@ -17,64 +17,6 @@ fn test_claims(sub: &str, org_id: &str) -> TokenClaims {
 }
 
 #[test]
-fn test_resource_pattern_exact_match() {
-    let pattern = ResourcePattern::Exact("/api/v1/users".to_string());
-    assert!(pattern.matches("/api/v1/users"));
-    assert!(!pattern.matches("/api/v1/users/123"));
-    assert!(!pattern.matches("/api/v1/user"));
-}
-
-#[test]
-fn test_resource_pattern_prefix_match() {
-    let pattern = ResourcePattern::Prefix("/api/v1/".to_string());
-    assert!(pattern.matches("/api/v1/users"));
-    assert!(pattern.matches("/api/v1/anything"));
-    assert!(!pattern.matches("/api/v2/users"));
-    assert!(!pattern.matches("/api"));
-}
-
-#[test]
-fn test_resource_pattern_glob_match() {
-    let pattern = ResourcePattern::Glob("/api/v1/users/*".to_string());
-    assert!(pattern.matches("/api/v1/users/123"));
-    assert!(pattern.matches("/api/v1/users/abc"));
-    assert!(!pattern.matches("/api/v1/users"));
-    assert!(!pattern.matches("/api/v1/posts/123"));
-}
-
-#[test]
-fn test_resource_pattern_glob_wildcard_at_start() {
-    let pattern = ResourcePattern::Glob("*/users".to_string());
-    assert!(pattern.matches("/api/users"));
-    assert!(pattern.matches("/anything/users"));
-    assert!(!pattern.matches("/api/users/123"));
-}
-
-#[test]
-fn test_resource_pattern_glob_question_mark() {
-    let pattern = ResourcePattern::Glob("/api/v1/users/?".to_string());
-    assert!(pattern.matches("/api/v1/users/1"));
-    assert!(pattern.matches("/api/v1/users/a"));
-    assert!(!pattern.matches("/api/v1/users/12"));
-    assert!(!pattern.matches("/api/v1/users/"));
-}
-
-#[test]
-fn test_resource_pattern_glob_multiple_wildcards() {
-    let pattern = ResourcePattern::Glob("/api/*/users/*".to_string());
-    assert!(pattern.matches("/api/v1/users/123"));
-    assert!(pattern.matches("/api/v2/users/456"));
-    assert!(!pattern.matches("/api/v1/posts/123"));
-}
-
-#[test]
-fn test_resource_pattern_glob_empty_pattern() {
-    let pattern = ResourcePattern::Glob("".to_string());
-    assert!(pattern.matches(""));
-    assert!(!pattern.matches("/anything"));
-}
-
-#[test]
 fn test_condition_equals() {
     let condition = Condition {
         claim: "org_id".to_string(),
@@ -185,7 +127,6 @@ fn test_policy_allow_matches() {
         id: "p1".to_string(),
         name: "Allow GET users".to_string(),
         rules: vec![PolicyRule {
-            resource: ResourcePattern::Prefix("/api/v1/users".to_string()),
             methods: HashSet::from([HttpMethod::Get]),
             conditions: vec![],
         }],
@@ -193,10 +134,8 @@ fn test_policy_allow_matches() {
     };
 
     let claims = test_claims("user1", "org1");
-    assert!(policy.matches_request(&HttpMethod::Get, "/api/v1/users", &claims));
-    assert!(policy.matches_request(&HttpMethod::Get, "/api/v1/users/123", &claims));
-    assert!(!policy.matches_request(&HttpMethod::Post, "/api/v1/users", &claims));
-    assert!(!policy.matches_request(&HttpMethod::Get, "/api/v1/posts", &claims));
+    assert!(policy.matches_request(&HttpMethod::Get, &claims));
+    assert!(!policy.matches_request(&HttpMethod::Post, &claims));
 }
 
 #[test]
@@ -205,7 +144,6 @@ fn test_policy_deny_matches() {
         id: "p1".to_string(),
         name: "Deny DELETE users".to_string(),
         rules: vec![PolicyRule {
-            resource: ResourcePattern::Prefix("/api/v1/users".to_string()),
             methods: HashSet::from([HttpMethod::Delete]),
             conditions: vec![],
         }],
@@ -213,9 +151,8 @@ fn test_policy_deny_matches() {
     };
 
     let claims = test_claims("user1", "org1");
-    assert!(policy.matches_request(&HttpMethod::Delete, "/api/v1/users/123", &claims));
-    assert!(!policy.matches_request(&HttpMethod::Get, "/api/v1/users/123", &claims));
-    assert!(!policy.matches_request(&HttpMethod::Delete, "/api/v1/posts/123", &claims));
+    assert!(policy.matches_request(&HttpMethod::Delete, &claims));
+    assert!(!policy.matches_request(&HttpMethod::Get, &claims));
 }
 
 #[test]
@@ -224,7 +161,6 @@ fn test_policy_deny_effect_inverts_logic() {
         id: "p1".to_string(),
         name: "Deny all users".to_string(),
         rules: vec![PolicyRule {
-            resource: ResourcePattern::Prefix("/api/v1/users".to_string()),
             methods: HashSet::from([HttpMethod::Get]),
             conditions: vec![],
         }],
@@ -232,7 +168,7 @@ fn test_policy_deny_effect_inverts_logic() {
     };
 
     let claims = test_claims("user1", "org1");
-    assert!(policy.matches_request(&HttpMethod::Get, "/api/v1/users", &claims));
+    assert!(policy.matches_request(&HttpMethod::Get, &claims));
 }
 
 #[test]
@@ -241,7 +177,6 @@ fn test_policy_with_condition() {
         id: "p1".to_string(),
         name: "Allow only specific org".to_string(),
         rules: vec![PolicyRule {
-            resource: ResourcePattern::Prefix("/api/v1/".to_string()),
             methods: HashSet::from([HttpMethod::Get]),
             conditions: vec![Condition {
                 claim: "org_id".to_string(),
@@ -253,10 +188,10 @@ fn test_policy_with_condition() {
     };
 
     let claims = test_claims("user1", "org1");
-    assert!(policy.matches_request(&HttpMethod::Get, "/api/v1/users", &claims));
+    assert!(policy.matches_request(&HttpMethod::Get, &claims));
 
     let claims = test_claims("user1", "org2");
-    assert!(!policy.matches_request(&HttpMethod::Get, "/api/v1/users", &claims));
+    assert!(!policy.matches_request(&HttpMethod::Get, &claims));
 }
 
 #[test]
@@ -266,12 +201,10 @@ fn test_policy_multiple_rules() {
         name: "Allow GET or POST".to_string(),
         rules: vec![
             PolicyRule {
-                resource: ResourcePattern::Prefix("/api/v1/".to_string()),
                 methods: HashSet::from([HttpMethod::Get]),
                 conditions: vec![],
             },
             PolicyRule {
-                resource: ResourcePattern::Prefix("/api/v1/".to_string()),
                 methods: HashSet::from([HttpMethod::Post]),
                 conditions: vec![],
             },
@@ -280,9 +213,9 @@ fn test_policy_multiple_rules() {
     };
 
     let claims = test_claims("user1", "org1");
-    assert!(policy.matches_request(&HttpMethod::Get, "/api/v1/users", &claims));
-    assert!(policy.matches_request(&HttpMethod::Post, "/api/v1/users", &claims));
-    assert!(!policy.matches_request(&HttpMethod::Delete, "/api/v1/users", &claims));
+    assert!(policy.matches_request(&HttpMethod::Get, &claims));
+    assert!(policy.matches_request(&HttpMethod::Post, &claims));
+    assert!(!policy.matches_request(&HttpMethod::Delete, &claims));
 }
 
 #[test]
@@ -291,7 +224,6 @@ fn test_policy_multiple_conditions_all_must_pass() {
         id: "p1".to_string(),
         name: "Allow specific org and sub".to_string(),
         rules: vec![PolicyRule {
-            resource: ResourcePattern::Prefix("/api/v1/".to_string()),
             methods: HashSet::from([HttpMethod::Get]),
             conditions: vec![
                 Condition {
@@ -310,13 +242,13 @@ fn test_policy_multiple_conditions_all_must_pass() {
     };
 
     let claims = test_claims("admin-user", "org1");
-    assert!(policy.matches_request(&HttpMethod::Get, "/api/v1/users", &claims));
+    assert!(policy.matches_request(&HttpMethod::Get, &claims));
 
     let claims = test_claims("regular-user", "org1");
-    assert!(!policy.matches_request(&HttpMethod::Get, "/api/v1/users", &claims));
+    assert!(!policy.matches_request(&HttpMethod::Get, &claims));
 
     let claims = test_claims("admin-user", "org2");
-    assert!(!policy.matches_request(&HttpMethod::Get, "/api/v1/users", &claims));
+    assert!(!policy.matches_request(&HttpMethod::Get, &claims));
 }
 
 #[test]
@@ -329,7 +261,7 @@ fn test_policy_empty_rules() {
     };
 
     let claims = test_claims("user1", "org1");
-    assert!(!policy.matches_request(&HttpMethod::Get, "/api/v1/users", &claims));
+    assert!(!policy.matches_request(&HttpMethod::Get, &claims));
 }
 
 #[test]

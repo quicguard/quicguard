@@ -38,9 +38,21 @@ pub struct Organization {
     pub auth: AuthConfig,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppDomainConfig {
+    pub paths: Vec<String>,
+    #[serde(default = "default_primary")]
+    pub r#type: String,
+}
+
+fn default_primary() -> String {
+    "primary".to_string()
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppConfig {
-    pub domains: Vec<String>,
+    #[serde(default)]
+    pub domains: HashMap<String, AppDomainConfig>,
     #[serde(default)]
     pub policies: Vec<Policy>,
 }

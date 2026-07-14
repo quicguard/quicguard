@@ -239,7 +239,7 @@ where
     };
 
     if let Err(ProxyError::AccessDenied) =
-        konfig::evaluate_policies(&org, &domain, &konfig_method, &uri_path, &claims)
+        konfig::evaluate_policies(&org, &domain, &konfig_method, &claims)
     {
         let (mut send_stream, _recv_stream) = stream.split();
         let resp = http::Response::builder()

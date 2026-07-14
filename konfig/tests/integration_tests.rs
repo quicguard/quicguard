@@ -25,6 +25,15 @@ fn make_auth_config(cookie_name: &str) -> AuthConfig {
 }
 
 fn make_sample_org(org_id: &str, domain: &str, cookie_name: &str) -> Organization {
+    let mut app_domains = HashMap::new();
+    app_domains.insert(
+        domain.to_string(),
+        AppDomainConfig {
+            paths: vec!["/api/".to_string(), "/".to_string()],
+            r#type: "primary".to_string(),
+        },
+    );
+
     Organization {
         id: org_id.to_string(),
         name: format!("Org {org_id}"),
@@ -42,13 +51,12 @@ fn make_sample_org(org_id: &str, domain: &str, cookie_name: &str) -> Organizatio
         apps: HashMap::from([(
             "main".to_string(),
             AppConfig {
-                domains: vec![domain.to_string()],
+                domains: app_domains,
                 policies: vec![
                     Policy {
                         id: "allow-read".to_string(),
                         name: "Allow reading".to_string(),
                         rules: vec![PolicyRule {
-                            resource: ResourcePattern::Prefix("/api/".to_string()),
                             methods: HashSet::from([HttpMethod::Get, HttpMethod::Head]),
                             conditions: vec![],
                         }],
@@ -58,7 +66,6 @@ fn make_sample_org(org_id: &str, domain: &str, cookie_name: &str) -> Organizatio
                         id: "deny-delete".to_string(),
                         name: "Deny delete on admin".to_string(),
                         rules: vec![PolicyRule {
-                            resource: ResourcePattern::Prefix("/api/admin/".to_string()),
                             methods: HashSet::from([HttpMethod::Delete]),
                             conditions: vec![],
                         }],
@@ -291,8 +298,8 @@ fn test_policy_evaluate_allow_read() {
     let org = make_sample_org("org1", "demo.localhost", "session_token");
     let claims = make_claims("user1", "org1", "main");
 
-    assert!(evaluate_policies(&org, "demo.localhost", &HttpMethod::Get, "/api/users", &claims).is_ok());
-    assert!(evaluate_policies(&org, "demo.localhost", &HttpMethod::Head, "/api/users", &claims).is_ok());
+    assert!(evaluate_policies(&org, "demo.localhost", &HttpMethod::Get, &claims).is_ok());
+    assert!(evaluate_policies(&org, "demo.localhost", &HttpMethod::Head, &claims).is_ok());
 }
 
 #[test]
@@ -300,7 +307,7 @@ fn test_policy_evaluate_deny_post() {
     let org = make_sample_org("org1", "demo.localhost", "session_token");
     let claims = make_claims("user1", "org1", "main");
 
-    assert!(evaluate_policies(&org, "demo.localhost", &HttpMethod::Post, "/api/users", &claims).is_err());
+    assert!(evaluate_policies(&org, "demo.localhost", &HttpMethod::Post, &claims).is_err());
 }
 
 #[test]
@@ -308,7 +315,7 @@ fn test_policy_evaluate_deny_delete_admin() {
     let org = make_sample_org("org1", "demo.localhost", "session_token");
     let claims = make_claims("user1", "org1", "main");
 
-    assert!(evaluate_policies(&org, "demo.localhost", &HttpMethod::Delete, "/api/admin/users", &claims).is_err());
+    assert!(evaluate_policies(&org, "demo.localhost", &HttpMethod::Delete, &claims).is_err());
 }
 
 #[test]
@@ -316,9 +323,8 @@ fn test_policy_evaluate_delete_non_admin_ok() {
     let org = make_sample_org("org1", "demo.localhost", "session_token");
     let claims = make_claims("user1", "org1", "main");
 
-    // DELETE on /api/users is not covered by deny-delete (which targets /api/admin/)
-    // and not covered by allow-read (which is GET/HEAD only), so no policy matches → denied
-    assert!(evaluate_policies(&org, "demo.localhost", &HttpMethod::Delete, "/api/users", &claims).is_err());
+    // DELETE is not covered by allow-read (which is GET/HEAD only), so no policy matches → denied
+    assert!(evaluate_policies(&org, "demo.localhost", &HttpMethod::Delete, &claims).is_err());
 }
 
 // ── Full integration: cookie → domain → JWT → policy ─────────────────────────
@@ -343,7 +349,7 @@ async fn test_full_flow_valid_cookie_allow() {
     assert_eq!(parsed_claims.sub, "user1");
 
     // 4. Evaluate policies
-    assert!(evaluate_policies(&org, "demo.localhost", &HttpMethod::Get, "/api/users", &parsed_claims).is_ok());
+    assert!(evaluate_policies(&org, "demo.localhost", &HttpMethod::Get, &parsed_claims).is_ok());
 }
 
 #[tokio::test]
@@ -382,8 +388,8 @@ async fn test_full_flow_valid_jwt_policy_denied() {
 
     let parsed_claims = validate_jwt(&token, &org.auth).unwrap();
 
-    // DELETE on /api/admin/ is denied
-    let result = evaluate_policies(&org, "demo.localhost", &HttpMethod::Delete, "/api/admin/users", &parsed_claims);
+    // DELETE is denied
+    let result = evaluate_policies(&org, "demo.localhost", &HttpMethod::Delete, &parsed_claims);
     assert!(result.is_err());
 }
 
@@ -448,14 +454,18 @@ fn test_config_from_json_roundtrip() {
         },
         "apps": {
             "main": {
-                "domains": ["demo.localhost"],
+                "domains": {
+                    "demo.localhost": {
+                        "paths": ["/api/", "/"],
+                        "type": "primary"
+                    }
+                },
                 "policies": [
                     {
                         "id": "allow-read",
                         "name": "Allow reading",
                         "rules": [
                             {
-                                "resource": {"Prefix": "/api/"},
                                 "methods": ["GET", "HEAD"],
                                 "conditions": []
                             }
@@ -467,7 +477,6 @@ fn test_config_from_json_roundtrip() {
                         "name": "Deny delete on admin",
                         "rules": [
                             {
-                                "resource": {"Prefix": "/api/admin/"},
                                 "methods": ["DELETE"],
                                 "conditions": []
                             }
@@ -501,4 +510,136 @@ fn test_config_from_json_roundtrip() {
     let deserialized: Organization = serde_json::from_str(&serialized).unwrap();
     assert_eq!(deserialized.id, "org1");
     assert_eq!(deserialized.auth.cookie_name, "session_token");
+}
+
+// ── find_matching_app tests ─────────────────────────────────────────────────
+
+#[test]
+fn test_find_matching_app_exact_path() {
+    let mut app_domains = HashMap::new();
+    app_domains.insert(
+        "demo.localhost".to_string(),
+        AppDomainConfig {
+            paths: vec!["/api/users".to_string()],
+            r#type: "primary".to_string(),
+        },
+    );
+
+    let org = Organization {
+        id: "org1".to_string(),
+        name: "Test Org".to_string(),
+        domains: HashMap::new(),
+        apps: HashMap::from([(
+            "web-app".to_string(),
+            AppConfig {
+                domains: app_domains,
+                policies: vec![],
+            },
+        )]),
+        user_groups: HashMap::new(),
+        app_user_groups: HashMap::new(),
+        auth: make_auth_config("session_token"),
+    };
+
+    let result = find_matching_app(&org, "demo.localhost", "/api/users");
+    assert_eq!(result, Some("web-app".to_string()));
+}
+
+#[test]
+fn test_find_matching_app_root_path() {
+    let mut app_domains = HashMap::new();
+    app_domains.insert(
+        "demo.localhost".to_string(),
+        AppDomainConfig {
+            paths: vec!["/".to_string()],
+            r#type: "primary".to_string(),
+        },
+    );
+
+    let org = Organization {
+        id: "org1".to_string(),
+        name: "Test Org".to_string(),
+        domains: HashMap::new(),
+        apps: HashMap::from([(
+            "web-app".to_string(),
+            AppConfig {
+                domains: app_domains,
+                policies: vec![],
+            },
+        )]),
+        user_groups: HashMap::new(),
+        app_user_groups: HashMap::new(),
+        auth: make_auth_config("session_token"),
+    };
+
+    let result = find_matching_app(&org, "demo.localhost", "/");
+    assert_eq!(result, Some("web-app".to_string()));
+}
+
+#[test]
+fn test_find_matching_app_no_domain() {
+    let org = Organization {
+        id: "org1".to_string(),
+        name: "Test Org".to_string(),
+        domains: HashMap::new(),
+        apps: HashMap::new(),
+        user_groups: HashMap::new(),
+        app_user_groups: HashMap::new(),
+        auth: make_auth_config("session_token"),
+    };
+
+    let result = find_matching_app(&org, "unknown.example.com", "/api");
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_find_matching_app_multiple_apps() {
+    let mut web_domains = HashMap::new();
+    web_domains.insert(
+        "demo.localhost".to_string(),
+        AppDomainConfig {
+            paths: vec!["/api/".to_string()],
+            r#type: "primary".to_string(),
+        },
+    );
+
+    let mut mobile_domains = HashMap::new();
+    mobile_domains.insert(
+        "demo.localhost".to_string(),
+        AppDomainConfig {
+            paths: vec!["/mobile/".to_string()],
+            r#type: "dependency".to_string(),
+        },
+    );
+
+    let org = Organization {
+        id: "org1".to_string(),
+        name: "Test Org".to_string(),
+        domains: HashMap::new(),
+        apps: HashMap::from([
+            (
+                "web-app".to_string(),
+                AppConfig {
+                    domains: web_domains,
+                    policies: vec![],
+                },
+            ),
+            (
+                "mobile-app".to_string(),
+                AppConfig {
+                    domains: mobile_domains,
+                    policies: vec![],
+                },
+            ),
+        ]),
+        user_groups: HashMap::new(),
+        app_user_groups: HashMap::new(),
+        auth: make_auth_config("session_token"),
+    };
+
+    let result = find_matching_app(&org, "demo.localhost", "/api/users");
+    assert_eq!(result, Some("web-app".to_string()));
+
+    let result = find_matching_app(&org, "demo.localhost", "/mobile/123");
+    assert_eq!(result, Some("mobile-app".to_string()));
 }

@@ -219,7 +219,6 @@ pub fn evaluate_policies(
     org: &Organization,
     domain: &str,
     method: &HttpMethod,
-    path: &str,
     claims: &TokenClaims,
 ) -> Result<(), ProxyError> {
     if claims.app.is_empty() {
@@ -228,7 +227,7 @@ pub fn evaluate_policies(
 
     let app = org.apps.get(&claims.app).ok_or(ProxyError::AccessDenied)?;
 
-    if !app.domains.iter().any(|d| d == domain) {
+    if !app.domains.contains_key(domain) {
         return Err(ProxyError::AccessDenied);
     }
 
@@ -236,7 +235,7 @@ pub fn evaluate_policies(
     let mut any_allow = false;
 
     for policy in &app.policies {
-        if policy.matches_request(method, path, claims) {
+        if policy.matches_request(method, claims) {
             match policy.effect {
                 PolicyEffect::Deny => any_deny = true,
                 PolicyEffect::Allow => any_allow = true,
@@ -254,6 +253,25 @@ pub fn evaluate_policies(
     }
 }
 
+pub fn find_matching_app(org: &Organization, domain: &str, path: &str) -> Option<String> {
+    let mut best_match: Option<(String, usize)> = None;
+
+    for (app_id, app) in &org.apps {
+        if let Some(domain_config) = app.domains.get(domain) {
+            for app_path in &domain_config.paths {
+                if path.starts_with(app_path) {
+                    let match_len = app_path.len();
+                    if best_match.as_ref().map_or(true, |(_, best)| match_len > *best) {
+                        best_match = Some((app_id.clone(), match_len));
+                    }
+                }
+            }
+        }
+    }
+
+    best_match.map(|(app_id, _)| app_id)
+}
+
 #[cfg(test)]
 mod policy_tests {
     use super::*;
@@ -262,16 +280,23 @@ mod policy_tests {
 
     fn make_app_org() -> Organization {
         let mut apps = HashMap::new();
+        let mut domains = HashMap::new();
+        domains.insert(
+            "app.example.com".to_string(),
+            AppDomainConfig {
+                paths: vec!["/".to_string()],
+                r#type: "primary".to_string(),
+            },
+        );
         apps.insert(
             "web-app".to_string(),
             AppConfig {
-                domains: vec!["app.example.com".to_string()],
+                domains,
                 policies: vec![Policy {
                     id: "pol-1".to_string(),
                     name: "Allow GET".to_string(),
                     effect: PolicyEffect::Allow,
                     rules: vec![PolicyRule {
-                        resource: ResourcePattern::Prefix("/".to_string()),
                         methods: HashSet::from([HttpMethod::Get]),
                         conditions: vec![],
                     }],
@@ -317,7 +342,7 @@ mod policy_tests {
         };
 
         let result =
-            evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/", &claims);
+            evaluate_policies(&org, "app.example.com", &HttpMethod::Get, &claims);
         assert!(result.is_ok());
     }
 
@@ -337,7 +362,7 @@ mod policy_tests {
         };
 
         let result =
-            evaluate_policies(&org, "app.example.com", &HttpMethod::Get, "/", &claims);
+            evaluate_policies(&org, "app.example.com", &HttpMethod::Get, &claims);
         assert!(result.is_err());
     }
 
@@ -357,7 +382,21 @@ mod policy_tests {
         };
 
         let result =
-            evaluate_policies(&org, "other.example.com", &HttpMethod::Get, "/", &claims);
+            evaluate_policies(&org, "other.example.com", &HttpMethod::Get, &claims);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_find_matching_app() {
+        let org = make_app_org();
+        let result = find_matching_app(&org, "app.example.com", "/api/users");
+        assert_eq!(result, Some("web-app".to_string()));
+    }
+
+    #[test]
+    fn test_find_matching_app_no_match() {
+        let org = make_app_org();
+        let result = find_matching_app(&org, "unknown.example.com", "/api/users");
+        assert!(result.is_none());
     }
 }

@@ -24,13 +24,18 @@ fn test_config_serialization_roundtrip() {
                 apps: HashMap::from([(
                     "main".to_string(),
                     AppConfig {
-                        domains: vec!["app.example.com".to_string()],
+                        domains: HashMap::from([(
+                            "app.example.com".to_string(),
+                            AppDomainConfig {
+                                paths: vec!["/api/".to_string()],
+                                r#type: "primary".to_string(),
+                            },
+                        )]),
                         policies: vec![
                             Policy {
                                 id: "p1".to_string(),
                                 name: "Allow GET".to_string(),
                                 rules: vec![PolicyRule {
-                                    resource: ResourcePattern::Prefix("/api/".to_string()),
                                     methods: HashSet::from([HttpMethod::Get]),
                                     conditions: vec![Condition {
                                         claim: "org_id".to_string(),
@@ -44,7 +49,6 @@ fn test_config_serialization_roundtrip() {
                                 id: "dp1".to_string(),
                                 name: "Domain policy".to_string(),
                                 rules: vec![PolicyRule {
-                                    resource: ResourcePattern::Exact("/api/special".to_string()),
                                     methods: HashSet::from([HttpMethod::Post]),
                                     conditions: vec![],
                                 }],
@@ -123,7 +127,6 @@ fn test_policy_serialization_roundtrip() {
         id: "p1".to_string(),
         name: "Test Policy".to_string(),
         rules: vec![PolicyRule {
-            resource: ResourcePattern::Glob("/api/*/users/*".to_string()),
             methods: HashSet::from([HttpMethod::Get, HttpMethod::Post]),
             conditions: vec![
                 Condition {
@@ -197,28 +200,6 @@ fn test_policy_effect_deny_serialization() {
 
     let deserialized: Policy = serde_json::from_str(&json).unwrap();
     assert!(matches!(deserialized.effect, PolicyEffect::Deny));
-}
-
-#[test]
-fn test_resource_pattern_serialization() {
-    let patterns = vec![
-        ResourcePattern::Exact("/api/v1/users".to_string()),
-        ResourcePattern::Prefix("/api/v1/".to_string()),
-        ResourcePattern::Glob("/api/*/users/*".to_string()),
-    ];
-
-    for pattern in patterns {
-        let json = serde_json::to_string(&pattern).unwrap();
-        let deserialized: ResourcePattern = serde_json::from_str(&json).unwrap();
-
-        let (original, deserialized) = match (&pattern, &deserialized) {
-            (ResourcePattern::Exact(a), ResourcePattern::Exact(b)) => (a, b),
-            (ResourcePattern::Prefix(a), ResourcePattern::Prefix(b)) => (a, b),
-            (ResourcePattern::Glob(a), ResourcePattern::Glob(b)) => (a, b),
-            _ => panic!("Pattern type mismatch"),
-        };
-        assert_eq!(original, deserialized);
-    }
 }
 
 #[test]
@@ -310,14 +291,18 @@ fn test_complex_organization_json() {
         },
         "apps": {
             "web-app": {
-                "domains": ["app.acme.com"],
+                "domains": {
+                    "app.acme.com": {
+                        "paths": ["/"],
+                        "type": "primary"
+                    }
+                },
                 "policies": [
                     {
                         "id": "general-read",
                         "name": "Allow reading",
                         "rules": [
                             {
-                                "resource": {"Prefix": "/api/"},
                                 "methods": ["GET"],
                                 "conditions": []
                             }
@@ -327,14 +312,18 @@ fn test_complex_organization_json() {
                 ]
             },
             "api-app": {
-                "domains": ["api.acme.com"],
+                "domains": {
+                    "api.acme.com": {
+                        "paths": ["/api/"],
+                        "type": "primary"
+                    }
+                },
                 "policies": [
                     {
                         "id": "api-deny-delete",
                         "name": "Deny delete on API",
                         "rules": [
                             {
-                                "resource": {"Prefix": "/api/"},
                                 "methods": ["DELETE"],
                                 "conditions": []
                             }
@@ -362,4 +351,28 @@ fn test_complex_organization_json() {
     assert_eq!(org.apps["api-app"].policies.len(), 1);
     assert_eq!(org.domains["app.acme.com"].upstream.max_retries, 5);
     assert_eq!(org.auth.cookie_name, "acme_session");
+}
+
+#[test]
+fn test_app_domain_config_serialization() {
+    let config = AppDomainConfig {
+        paths: vec!["/api/v1/".to_string(), "/api/v2/".to_string()],
+        r#type: "dependency".to_string(),
+    };
+
+    let json = serde_json::to_string_pretty(&config).unwrap();
+    let deserialized: AppDomainConfig = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(deserialized.paths, vec!["/api/v1/", "/api/v2/"]);
+    assert_eq!(deserialized.r#type, "dependency");
+}
+
+#[test]
+fn test_app_domain_config_default_type() {
+    let json = r#"{
+        "paths": ["/api/"]
+    }"#;
+
+    let config: AppDomainConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(config.r#type, "primary");
 }
