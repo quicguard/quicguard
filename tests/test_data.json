@@ -1,0 +1,94 @@
+{
+    "org1": {
+        "id": "org1",
+        "name": "Organization 1",
+        "domains": {
+            "pr1.org1.localhost": {
+                "upstream": {"base_url": "http://localhost:8080", "timeout_ms": 5000, "max_retries": 3},
+                "tls": {"cert_pem": "", "key_pem": ""}
+            },
+            "pr2.org1.localhost": {
+                "upstream": {"base_url": "http://localhost:8081", "timeout_ms": 5000, "max_retries": 3},
+                "tls": {"cert_pem": "", "key_pem": ""}
+            },
+            "sec1.org1.localhost": {
+                "upstream": {"base_url": "http://localhost:8082", "timeout_ms": 5000, "max_retries": 3},
+                "tls": {"cert_pem": "", "key_pem": ""}
+            }
+        },
+        "apps": {
+            "web-app": {
+                "domains": {
+                    "pr1.org1.localhost": {"paths": ["/api", "/web"], "type": "primary"},
+                    "pr2.org1.localhost": {"paths": ["/api"], "type": "primary"},
+                    "sec1.org1.localhost": {"paths": ["/api"], "type": "dependency"}
+                },
+                "policies": [{"id": "pol-1", "name": "Allow all", "effect": "Allow", "rules": [{"methods": ["GET", "POST"], "conditions": []}]}]
+            },
+            "mobile-app": {
+                "domains": {
+                    "pr1.org1.localhost": {"paths": ["/mobile"], "type": "primary"},
+                    "pr2.org1.localhost": {"paths": ["/mobile"], "type": "primary"}
+                },
+                "policies": [{"id": "pol-2", "name": "Allow mobile", "effect": "Allow", "rules": [{"methods": ["GET"], "conditions": []}]}]
+            }
+        },
+        "auth": {
+            "jwt_issuer": "https://auth.example.com",
+            "jwt_audience": "quicguard",
+            "jwt_public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAQeCD7cQSeJ3XWrfU1OpnPURRPwAmr+dVwHAySm2v3zo=\n-----END PUBLIC KEY-----",
+            "jwt_private_key": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEICiHg2HNKs7xIdIwlxNum1reFIq/HMFF/Qz5EtBROCWH\n-----END PRIVATE KEY-----",
+            "cookie_name": "session_token",
+            "idp_url": "http://localhost:3001",
+            "redirect_url": "",
+            "req_param_name": "req",
+            "token_param_name": "token"
+        }
+    },
+    "org2": {
+        "id": "org2",
+        "name": "Organization 2",
+        "domains": {
+            "pr1.org2.localhost": {
+                "upstream": {"base_url": "http://localhost:9080", "timeout_ms": 5000, "max_retries": 3},
+                "tls": {"cert_pem": "", "key_pem": ""}
+            },
+            "pr2.org2.localhost": {
+                "upstream": {"base_url": "http://localhost:9081", "timeout_ms": 5000, "max_retries": 3},
+                "tls": {"cert_pem": "", "key_pem": ""}
+            },
+            "sec1.org2.localhost": {
+                "upstream": {"base_url": "http://localhost:9082", "timeout_ms": 5000, "max_retries": 3},
+                "tls": {"cert_pem": "", "key_pem": ""}
+            }
+        },
+        "apps": {
+            "admin-panel": {
+                "domains": {
+                    "pr1.org2.localhost": {"paths": ["/admin", "/dashboard"], "type": "primary"},
+                    "pr2.org2.localhost": {"paths": ["/admin"], "type": "primary"},
+                    "sec1.org2.localhost": {"paths": ["/admin"], "type": "dependency"}
+                },
+                "policies": [{"id": "pol-3", "name": "Admin access", "effect": "Allow", "rules": [{"methods": ["GET", "POST", "PUT", "DELETE"], "conditions": []}]}]
+            },
+            "public-site": {
+                "domains": {
+                    "pr1.org2.localhost": {"paths": ["/", "/about"], "type": "primary"},
+                    "pr2.org2.localhost": {"paths": ["/"], "type": "primary"}
+                },
+                "policies": [{"id": "pol-4", "name": "Public access", "effect": "Allow", "rules": [{"methods": ["GET"], "conditions": []}]}]
+            }
+        },
+        "auth": {
+            "jwt_issuer": "https://auth2.example.com",
+            "jwt_audience": "quicguard",
+            "jwt_public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAQeCD7cQSeJ3XWrfU1OpnPURRPwAmr+dVwHAySm2v3zo=\n-----END PUBLIC KEY-----",
+            "jwt_private_key": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEICiHg2HNKs7xIdIwlxNum1reFIq/HMFF/Qz5EtBROCWH\n-----END PRIVATE KEY-----",
+            "cookie_name": "session_token",
+            "idp_url": "http://localhost:3002",
+            "redirect_url": "",
+            "req_param_name": "req",
+            "token_param_name": "token"
+        }
+    }
+}
