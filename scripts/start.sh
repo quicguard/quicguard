@@ -73,6 +73,7 @@ QC_PORT="${QC_PORT:-4433}"
 
 REDIS_URL="redis://127.0.0.1:${REDIS_PORT}"
 REDIS_ORG_KEY="${REDIS_ORG_KEY:-quicguard:organizations}"
+DATABASE_URL="${DATABASE_URL:-postgres://quicguard:quicguard@localhost:5432/quicguard}"
 
 # ── Colors ─────────────────────────────────────────────────────────────────
 
@@ -234,40 +235,49 @@ case $ACTION in
         # Load sample data
         load_sample_data
 
-        # 2. Build and start Dashboard
+        # 2. Build and start Dashboard (requires PostgreSQL)
         print_warning "Building Dashboard..."
-        cd "$PROJECT_ROOT/dashboard"
-        cargo build --release 2>&1 | tail -1
+        cd "$PROJECT_ROOT"
+        cargo build --release -p dashboard 2>&1 | tail -1
         print_status "Dashboard built"
 
-        print_warning "Starting Dashboard..."
-        if check_port "$DASHBOARD_PORT"; then
-            print_warning "Dashboard already running on port $DASHBOARD_PORT"
+        # Check if PostgreSQL is available
+        if pg_isready -h localhost -p 5432 >/dev/null 2>&1 || \
+           (command -v pg_isready >/dev/null 2>&1 && pg_isready >/dev/null 2>&1); then
+            print_warning "Starting Dashboard..."
+            if check_port "$DASHBOARD_PORT"; then
+                print_warning "Dashboard already running on port $DASHBOARD_PORT"
+            else
+                DATABASE_URL="$DATABASE_URL" \
+                REDIS_URL="$REDIS_URL" \
+                JWT_SECRET="${JWT_SECRET:-secret}" \
+                RUST_LOG=info \
+                "$PROJECT_ROOT/target/release/dashboard" > "$LOG_DIR/dashboard.log" 2>&1 &
+                echo $! > "$PID_DIR/dashboard.pid"
+                wait_for_port "$DASHBOARD_PORT" "Dashboard"
+            fi
         else
-            DATABASE_URL="${DATABASE_URL:-postgres://postgres:postgres@localhost/quicguard}" \
-            REDIS_URL="$REDIS_URL" \
-            JWT_SECRET="${JWT_SECRET:-secret}" \
-            RUST_LOG=info \
-            ./target/release/dashboard > "$LOG_DIR/dashboard.log" 2>&1 &
-            echo $! > "$PID_DIR/dashboard.pid"
-            wait_for_port "$DASHBOARD_PORT" "Dashboard"
+            print_warning "PostgreSQL not available - skipping Dashboard"
+            print_warning "Start PostgreSQL manually or run: docker-compose -f services/services.yaml up -d postgres"
         fi
 
         # 3. Build and start Auth Service
         print_warning "Building Auth Service..."
-        cd "$PROJECT_ROOT/auth"
-        cargo build --release 2>&1 | tail -1
+        cd "$PROJECT_ROOT"
+        cargo build --release -p auth-service 2>&1 | tail -1
         print_status "Auth Service built"
 
         print_warning "Starting Auth Service..."
         if check_port "$AUTH_PORT"; then
             print_warning "Auth Service already running on port $AUTH_PORT"
         else
+            cd "$PROJECT_ROOT/auth"
+            DATABASE_URL="$DATABASE_URL" \
             REDIS_URL="$REDIS_URL" \
             REDIS_ORG_KEY="$REDIS_ORG_KEY" \
             AUTH_SERVER_PORT="$AUTH_PORT" \
             RUST_LOG=info \
-            ./target/release/auth-service > "$LOG_DIR/auth.log" 2>&1 &
+            "$PROJECT_ROOT/target/release/auth-service" > "$LOG_DIR/auth.log" 2>&1 &
             echo $! > "$PID_DIR/auth.pid"
             wait_for_port "$AUTH_PORT" "Auth Service"
         fi
@@ -282,10 +292,25 @@ case $ACTION in
         if check_port "$QC_PORT"; then
             print_warning "QuicGuard already running on port $QC_PORT"
         else
+            # QuicGuard needs root privileges for TUN device
             RUST_LOG=info \
-            ./target/release/quicguard > "$LOG_DIR/quicguard.log" 2>&1 &
-            echo $! > "$PID_DIR/quicguard.pid"
-            wait_for_port "$QC_PORT" "QuicGuard"
+            "$PROJECT_ROOT/target/release/server" --listen "0.0.0.0:$QC_PORT" > "$LOG_DIR/quicguard.log" 2>&1 &
+            QUIC_PID=$!
+            echo $QUIC_PID > "$PID_DIR/quicguard.pid"
+            
+            # Wait a bit and check if it started
+            sleep 3
+            if kill -0 $QUIC_PID 2>/dev/null; then
+                if check_port "$QC_PORT"; then
+                    print_status "QuicGuard is running on port $QC_PORT"
+                else
+                    print_warning "QuicGuard started but port $QC_PORT not yet listening"
+                fi
+            else
+                print_warning "QuicGuard failed to start (may need root privileges for TUN device)"
+                print_warning "Run with sudo or start manually: sudo ./target/release/server --listen 0.0.0.0:$QC_PORT"
+                rm -f "$PID_DIR/quicguard.pid"
+            fi
         fi
 
         echo ""

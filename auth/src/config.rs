@@ -2,7 +2,7 @@ use anyhow::Result;
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub database_url: String,
+    pub database_url: Option<String>,
     pub redis_url: String,
     pub redis_org_key: String,
     pub server_port: u16,
@@ -15,7 +15,7 @@ impl Config {
     pub fn from_env() -> Result<Self> {
         dotenvy::dotenv().ok();
         Ok(Self {
-            database_url: std::env::var("DATABASE_URL")?,
+            database_url: std::env::var("DATABASE_URL").ok(),
             redis_url: std::env::var("REDIS_URL")
                 .unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string()),
             redis_org_key: std::env::var("REDIS_ORG_KEY")
