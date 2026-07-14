@@ -118,4 +118,50 @@ mod tests {
         // Token should be present (JS handles escaping via JSON serialization)
         assert!(html.contains("token-with-"));
     }
+
+    #[test]
+    fn test_token_setting_html_contains_domains() {
+        let html = token_setting_html(
+            &["pr2.com".to_string()],
+            &["/api".to_string()],
+            "test-token",
+            "session_token",
+            "/",
+        );
+
+        assert!(html.contains("pr2.com"));
+        assert!(html.contains("X-Set-Token"));
+    }
+
+    #[test]
+    fn test_token_setting_html_contains_paths() {
+        let html = token_setting_html(
+            &["pr2.com".to_string()],
+            &["/api".to_string(), "/dashboard".to_string()],
+            "test-token",
+            "session_token",
+            "/",
+        );
+
+        assert!(html.contains("/api"));
+        assert!(html.contains("/dashboard"));
+    }
+
+    #[test]
+    fn test_token_setting_html_sets_cookie_locally() {
+        let html = token_setting_html(
+            &["pr2.com".to_string()],
+            &["/api".to_string()],
+            "test-token",
+            "session_token",
+            "/",
+        );
+
+        assert!(html.contains("document.cookie"));
+        // Cookie is set via JS template literals: `${cookieName}=${token}; path=${path}; secure; samesite=lax`
+        assert!(html.contains("${cookieName}=${token}"));
+        assert!(html.contains("path=${path}"));
+        assert!(html.contains("secure"));
+        assert!(html.contains("samesite=lax"));
+    }
 }

@@ -7,7 +7,6 @@ use axum::{
 use chrono::{Duration, Utc};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use konfig::TokenClaims;
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{error, info, warn};
@@ -15,6 +14,7 @@ use url::Url;
 
 mod config;
 mod db;
+pub mod otp;
 
 use config::Config;
 use db::Database;
@@ -55,16 +55,11 @@ struct ErrorResponse {
     error: String,
 }
 
-fn generate_otp() -> String {
-    let mut rng = rand::thread_rng();
-    format!("{:06}", rng.gen_range(0..1_000_000))
-}
-
 async fn send_otp(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<SendOtpRequest>,
 ) -> Result<(StatusCode, Json<SendOtpResponse>), (StatusCode, Json<ErrorResponse>)> {
-    let otp = generate_otp();
+    let otp = otp::generate_otp();
     
     info!("Generating OTP for email: {}", payload.email);
     
@@ -260,8 +255,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_generate_otp() {
-        let otp = generate_otp();
+    fn test_otp_generate_otp() {
+        let otp = otp::generate_otp();
         assert_eq!(otp.len(), 6);
         assert!(otp.chars().all(|c| c.is_ascii_digit()));
     }
