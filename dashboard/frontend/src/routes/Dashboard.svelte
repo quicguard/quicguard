@@ -35,6 +35,7 @@
   let jwtAudience = '';
   let autoGenerateJwt = true;
   let jwtPublicKey = '';
+  let jwtPrivateKey = '';
   let cookieName = 'session_token';
   let redirectUrl = '';
   let idpUrl = '';
@@ -67,6 +68,7 @@
   let editJwtAudience = '';
   let editAutoGenerateJwt = false;
   let editJwtPublicKey = '';
+  let editJwtPrivateKey = '';
   let editCookieName = '';
   let editRedirectUrl = '';
   let editIdpUrl = '';
@@ -199,6 +201,7 @@
     jwtAudience = '';
     autoGenerateJwt = true;
     jwtPublicKey = '';
+    jwtPrivateKey = '';
     cookieName = 'session_token';
     redirectUrl = '';
     idpUrl = '';
@@ -480,6 +483,7 @@
         jwt_issuer: jwtIssuer.trim(),
         jwt_audience: jwtAudience.trim(),
         jwt_public_key: autoGenerateJwt ? null : jwtPublicKey || null,
+        jwt_private_key: autoGenerateJwt ? null : jwtPrivateKey || null,
         auto_generate_jwt_keys: autoGenerateJwt,
         cookie_name: cookieName || null,
         redirect_url: redirectUrl || null,
@@ -614,6 +618,7 @@
     editJwtAudience = orgDetail.config.auth?.jwt_audience || '';
     editAutoGenerateJwt = false;
     editJwtPublicKey = orgDetail.config.auth?.jwt_public_key || '';
+    editJwtPrivateKey = orgDetail.config.auth?.jwt_private_key || '';
     editCookieName = orgDetail.config.auth?.cookie_name || '';
     editRedirectUrl = orgDetail.config.auth?.redirect_url || '';
     editIdpUrl = orgDetail.config.auth?.idp_url || '';
@@ -705,6 +710,7 @@
         jwt_issuer: editJwtIssuer.trim() || undefined,
         jwt_audience: editJwtAudience.trim() || undefined,
         jwt_public_key: editAutoGenerateJwt ? null : (editJwtPublicKey || undefined),
+        jwt_private_key: editAutoGenerateJwt ? null : (editJwtPrivateKey || undefined),
         auto_generate_jwt_keys: editAutoGenerateJwt,
         cookie_name: editCookieName || undefined,
         redirect_url: editRedirectUrl || undefined,
@@ -901,6 +907,8 @@
             <p>IDP URL: <code>{orgDetail.config.auth?.idp_url || '-'}</code></p>
             <p>Request Param: <code>{orgDetail.config.auth?.req_param_name || 'req'}</code></p>
             <p>Token Param: <code>{orgDetail.config.auth?.token_param_name || 'token'}</code></p>
+            <p>JWT Public Key: <code>{orgDetail.config.auth?.jwt_public_key ? 'Configured' : '-'}</code></p>
+            <p>JWT Private Key: <code>{orgDetail.config.auth?.jwt_private_key ? 'Configured' : '-'}</code></p>
           </div>
         {/if}
 
@@ -1084,10 +1092,11 @@
                 </label>
                 {#if !editAutoGenerateJwt}
                   <label>JWT Public Key (PEM) <textarea bind:value={editJwtPublicKey} rows="4"></textarea></label>
+                  <label>JWT Private Key (PEM) <textarea bind:value={editJwtPrivateKey} rows="4"></textarea></label>
                 {/if}
                 <label>Cookie Name <input bind:value={editCookieName} /></label>
                 <label>Redirect URL <input bind:value={editRedirectUrl} /></label>
-                <label>IDP URL <input bind:value={editIdpUrl} /></label>
+                <label>IDP URL <input bind:value={editIdpUrl} placeholder="http://localhost:3001" /></label>
                 <label>Request Parameter Name <input bind:value={editReqParamName} placeholder="req" /></label>
                 <label>Token Parameter Name <input bind:value={editTokenParamName} placeholder="token" /></label>
               </div>
@@ -1431,10 +1440,11 @@
             </label>
             {#if !autoGenerateJwt}
               <label>JWT Public Key (PEM) <textarea bind:value={jwtPublicKey} rows="6" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"></textarea></label>
+              <label>JWT Private Key (PEM) <textarea bind:value={jwtPrivateKey} rows="6" placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"></textarea></label>
             {/if}
             <label>Cookie Name <input bind:value={cookieName} placeholder="session_token" /></label>
             <label>Redirect URL <input bind:value={redirectUrl} placeholder="https://auth.example.com/login" /></label>
-            <label>IDP URL <input bind:value={idpUrl} placeholder="https://auth.example.com/idp" /></label>
+            <label>IDP URL <input bind:value={idpUrl} placeholder="http://localhost:3001" /></label>
             <label>Request Parameter Name <input bind:value={reqParamName} placeholder="req" /></label>
             <label>Token Parameter Name <input bind:value={tokenParamName} placeholder="token" /></label>
           </div>
