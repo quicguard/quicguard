@@ -2,13 +2,15 @@ use anyhow::Result;
 use axum::{
     extract::{Json, State},
     http::StatusCode,
-    routing::{post, Router},
+    response::Redirect,
+    routing::{get, post, Router},
 };
 use chrono::{Duration, Utc};
 use jsonwebtoken::{encode, EncodingKey, Header};
 use konfig::TokenClaims;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tower_http::services::ServeDir;
 use tracing::{error, info, warn};
 use url::Url;
 
@@ -238,6 +240,7 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/api/otp/send", post(send_otp))
         .route("/api/otp/verify", post(verify_otp))
+        .fallback_service(ServeDir::new("static"))
         .with_state(state);
 
     // Start server
