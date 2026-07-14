@@ -2285,6 +2285,7 @@ dependencies = [
  "s2n-quic",
  "s2n-tls",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "time",
  "tokio",

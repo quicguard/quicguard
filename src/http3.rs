@@ -13,6 +13,19 @@ use konfig::{HttpMethod, ProxyError, ProxyState};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+use crate::html;
+
+/// Extract the domain (host without port) from an Origin or URL string.
+fn extract_domain(origin: &str) -> String {
+    origin
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split(':')
+        .next()
+        .unwrap_or("")
+        .to_string()
+}
+
 pub type HttpClient =
     Client<HttpConnector, http_body_util::combinators::BoxBody<Bytes, std::io::Error>>;
 
@@ -105,32 +118,177 @@ where
 
     let cookie_name = &org.auth.cookie_name;
 
+    // Handle OPTIONS preflight for CORS
+    if method == http::Method::OPTIONS {
+        let (mut send_stream, _recv_stream) = stream.split();
+        let resp = http::Response::builder()
+            .status(204)
+            .header("access-control-allow-origin", "*")
+            .header("access-control-allow-methods", "GET, OPTIONS")
+            .header("access-control-allow-headers", "X-Set-Token, Content-Type")
+            .header("access-control-max-age", "86400")
+            .body(())
+            .unwrap();
+        send_stream.send_response(resp).await.ok();
+        send_stream.finish().await.ok();
+        return Ok(format!("CORS preflight for domain {domain}"));
+    }
+
+    // Handle X-Set-Token header for cross-domain cookie setting
+    if let Some(set_token) = req_headers.get("x-set-token").and_then(|v| v.to_str().ok()) {
+        if !set_token.is_empty() {
+            // Validate the token via JWT
+            if konfig::validate_jwt(set_token, &org.auth).is_err() {
+                let (mut send_stream, _recv_stream) = stream.split();
+                let resp = http::Response::builder()
+                    .status(401)
+                    .body(())
+                    .unwrap();
+                send_stream.send_response(resp).await.ok();
+                send_stream.finish().await.ok();
+                return Ok(format!("rejected: invalid X-Set-Token for domain {domain}"));
+            }
+
+            // Check CORS: origin must be a primary domain in this org
+            let origin_str = req_headers
+                .get("origin")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            let origin_domain = extract_domain(origin_str);
+
+            let origin_is_primary = org.apps.values().any(|app| {
+                app.domains.get(&origin_domain)
+                    .map_or(false, |d| d.r#type == "primary")
+            });
+
+            if !origin_is_primary && !origin_str.is_empty() {
+                let (mut send_stream, _recv_stream) = stream.split();
+                let resp = http::Response::builder()
+                    .status(403)
+                    .body(())
+                    .unwrap();
+                send_stream.send_response(resp).await.ok();
+                send_stream.finish().await.ok();
+                return Ok(format!("rejected: CORS origin '{origin_domain}' is not primary for domain {domain}"));
+            }
+
+            // Token is valid and CORS check passed — set cookies for ALL paths
+            let domain_config = match org.domains.get(&domain) {
+                Some(dc) => dc,
+                None => {
+                    let (mut send_stream, _recv_stream) = stream.split();
+                    let resp = http::Response::builder()
+                        .status(404)
+                        .body(())
+                        .unwrap();
+                    send_stream.send_response(resp).await.ok();
+                    send_stream.finish().await.ok();
+                    return Ok(format!("rejected: no config for domain {domain}"));
+                }
+            };
+
+            // Collect all paths from all apps that reference this domain
+            let mut all_paths: Vec<String> = Vec::new();
+            for app in org.apps.values() {
+                if let Some(app_domain) = app.domains.get(&domain) {
+                    for path in &app_domain.paths {
+                        if !all_paths.contains(path) {
+                            all_paths.push(path.clone());
+                        }
+                    }
+                }
+            }
+            // Fallback to root if no paths found
+            if all_paths.is_empty() {
+                all_paths.push("/".to_string());
+            }
+
+            let (mut send_stream, _recv_stream) = stream.split();
+            let mut resp_builder = http::Response::builder()
+                .status(200)
+                .header("access-control-allow-origin", origin_str)
+                .header("access-control-allow-methods", "GET, OPTIONS")
+                .header("access-control-allow-headers", "X-Set-Token, Content-Type")
+                .header("access-control-allow-credentials", "true");
+
+            for path in &all_paths {
+                let cookie_value = format!(
+                    "{cookie_name}={set_token}; Path={path}; Secure; SameSite=Lax"
+                );
+                resp_builder = resp_builder.header("set-cookie", &cookie_value);
+            }
+
+            let resp = resp_builder.body(()).unwrap();
+            send_stream.send_response(resp).await.ok();
+            send_stream.finish().await.ok();
+            return Ok(format!("set token cookies for {domain} ({} paths)", all_paths.len()));
+        }
+    }
+
     // If the request contains the IDP callback token query parameter,
-    // set it as a cookie and redirect to the same path without the token.
+    // return an HTML page that propagates the token to all domains.
     let token_param = &org.auth.token_param_name;
     if let Some(query) = req.uri().query() {
         for pair in query.split('&') {
             let mut kv = pair.splitn(2, '=');
             if let (Some(key), Some(val)) = (kv.next(), kv.next()) {
                 if key == token_param && !val.is_empty() {
-                    let (mut send_stream, _recv_stream) = stream.split();
-                    let clean_path = req
-                        .uri()
-                        .path()
-                        .to_string();
-                    let redirect_uri = format!("https://{domain}{clean_path}");
-                    let cookie_value = format!(
-                        "{cookie_name}={val}; Path=/; HttpOnly; Secure; SameSite=Lax"
+                    // Validate the token
+                    if konfig::validate_jwt(val, &org.auth).is_err() {
+                        let (mut send_stream, _recv_stream) = stream.split();
+                        let resp = http::Response::builder()
+                            .status(401)
+                            .body(())
+                            .unwrap();
+                        send_stream.send_response(resp).await.ok();
+                        send_stream.finish().await.ok();
+                        return Ok(format!("rejected: invalid token in query for domain {domain}"));
+                    }
+
+                    // Collect other domains (all org domains except current)
+                    let other_domains: Vec<String> = org
+                        .domains
+                        .keys()
+                        .filter(|d| d.as_str() != domain)
+                        .cloned()
+                        .collect();
+
+                    // Collect paths for the current domain from all apps
+                    let mut current_paths: Vec<String> = Vec::new();
+                    for app in org.apps.values() {
+                        if let Some(app_domain) = app.domains.get(&domain) {
+                            for path in &app_domain.paths {
+                                if !current_paths.contains(path) {
+                                    current_paths.push(path.clone());
+                                }
+                            }
+                        }
+                    }
+                    if current_paths.is_empty() {
+                        current_paths.push("/".to_string());
+                    }
+
+                    let clean_path = req.uri().path().to_string();
+                    let req_url = format!("https://{domain}{clean_path}");
+
+                    let html = html::token_setting_html(
+                        &other_domains,
+                        &current_paths,
+                        val,
+                        cookie_name,
+                        &req_url,
                     );
+
+                    let (mut send_stream, _recv_stream) = stream.split();
                     let resp = http::Response::builder()
-                        .status(302)
-                        .header("location", &redirect_uri)
-                        .header("set-cookie", &cookie_value)
+                        .status(200)
+                        .header("content-type", "text/html; charset=utf-8")
                         .body(())
                         .unwrap();
                     send_stream.send_response(resp).await.ok();
+                    send_stream.send_data(Bytes::from(html)).await.ok();
                     send_stream.finish().await.ok();
-                    return Ok(format!("set token cookie and redirected for domain {domain}"));
+                    return Ok(format!("returned token setting HTML for domain {domain}"));
                 }
             }
         }

@@ -1,5 +1,6 @@
 // QuicGuard Uses s2n-quic for HTTP/3 QUIC transport
 
+mod html;
 mod http3;
 mod protocol;
 mod s2n_h3;
