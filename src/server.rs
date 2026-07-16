@@ -100,7 +100,15 @@ impl s2n_quic::provider::tls::s2n_tls::ConfigLoader for DomainCertLoader {
             .map(|s| s.to_string())
             .unwrap_or_default();
 
-        let configs = self.cache.blocking_lock();
+        let configs = match self.cache.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                error!("TLS config cache lock Contention for domain '{domain}'");
+                return s2n_quic::provider::tls::s2n_tls::config::Builder::new()
+                    .build()
+                    .expect("failed to build empty TLS config");
+            }
+        };
         match configs.get(&domain) {
             Some(config) => config.clone(),
             None => {

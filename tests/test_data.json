@@ -1,94 +1,249 @@
 {
-    "org1": {
-        "id": "org1",
-        "name": "Organization 1",
-        "domains": {
-            "pr1.org1.localhost": {
-                "upstream": {"base_url": "http://localhost:8080", "timeout_ms": 5000, "max_retries": 3},
-                "tls": {"cert_pem": "", "key_pem": ""}
-            },
-            "pr2.org1.localhost": {
-                "upstream": {"base_url": "http://localhost:8081", "timeout_ms": 5000, "max_retries": 3},
-                "tls": {"cert_pem": "", "key_pem": ""}
-            },
-            "sec1.org1.localhost": {
-                "upstream": {"base_url": "http://localhost:8082", "timeout_ms": 5000, "max_retries": 3},
-                "tls": {"cert_pem": "", "key_pem": ""}
-            }
+  "org1": {
+    "id": "org1",
+    "name": "Organization 1",
+    "domains": {
+      "pr1.org1.localhost": {
+        "upstream": {
+          "base_url": "http://localhost:8080",
+          "timeout_ms": 5000,
+          "max_retries": 3
         },
-        "apps": {
-            "web-app": {
-                "domains": {
-                    "pr1.org1.localhost": {"paths": ["/api", "/web"], "type": "primary"},
-                    "pr2.org1.localhost": {"paths": ["/api"], "type": "primary"},
-                    "sec1.org1.localhost": {"paths": ["/api"], "type": "dependency"}
-                },
-                "policies": [{"id": "pol-1", "name": "Allow all", "effect": "Allow", "rules": [{"methods": ["GET", "POST"], "conditions": []}]}]
-            },
-            "mobile-app": {
-                "domains": {
-                    "pr1.org1.localhost": {"paths": ["/mobile"], "type": "primary"},
-                    "pr2.org1.localhost": {"paths": ["/mobile"], "type": "primary"}
-                },
-                "policies": [{"id": "pol-2", "name": "Allow mobile", "effect": "Allow", "rules": [{"methods": ["GET"], "conditions": []}]}]
-            }
-        },
-        "auth": {
-            "jwt_issuer": "https://auth.example.com",
-            "jwt_audience": "quicguard",
-            "jwt_public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAQeCD7cQSeJ3XWrfU1OpnPURRPwAmr+dVwHAySm2v3zo=\n-----END PUBLIC KEY-----",
-            "jwt_private_key": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEICiHg2HNKs7xIdIwlxNum1reFIq/HMFF/Qz5EtBROCWH\n-----END PRIVATE KEY-----",
-            "cookie_name": "session_token",
-            "idp_url": "http://localhost:3001",
-            "redirect_url": "",
-            "req_param_name": "req",
-            "token_param_name": "token"
+        "tls": {
+          "cert_pem": "-----BEGIN CERTIFICATE-----\\MIIDCTCCAfGgAwIBAgIUQDnFRzFYv5FB16U/GTmwKcQhEWQwDQYJKoZIhvcNAQEL\\BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDcxNjEzNDczOVoXDTI3MDcx\\NjEzNDczOVowFDESMBAGA1UEAwwJbG9jYWxob3N0MIIBIjANBgkqhkiG9w0BAQEF\\AAOCAQ8AMIIBCgKCAQEAjw0Or6ydwK9UDUIAnzkWuHNBNQnOtiC9+xp+gJ6S6lD3\\zjBw2Eylnp29yZvIZmU6ua3J2tnXru823fyYF7X1Bd7oSG1KGnZF7iWNAbwELBo4\\meOIxPNG/VoZapv1GFj8CuqJdNhg0xhL85NLo1gHOqRfTkK/W+qre67SRx9DjRkh\\Xyq/hMvI/ivf2rXGqI8BYASl8D/2aGh1GgAWFY/3o62lIATpBw7592FHK694f99A\\tGsI6hMnV3ldqINAPewssH0ruQgGH/Hzb2xIPfx5vk0w0Uo7OWVgwu7zQWTYujtp\\hIsbPrFbI1EibyToENtPaVIO42f/xAs8DNpx0VGskwIDAQABo1MwUTAdBgNVHQ4E\\FgQURwWTCaN5UCBfyIR8j98IWuyQngIwHwYDVR0jBBgwFoAURwWTCaN5UCBfyIR8\\j98IWuyQngIwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEAVAp5\\/OB8LCy7qNZlmJSTw62WWclV1y9YJkGCh5FKm804XnDcUEpReXMT/UWd2Kw+eP2h\\MJDz23+UlZZWisGOZmKCbgEGBufjmNqajPw4p4/IIYjfd26MQN31WM6/LZ4efJZ2\\pM+D5xOqkvneHJVhU4D0X+vGAmU1rWUP0oqVBtHs0RG/IYvz9+3i5Tf+74MDAmbE\\eUeb3MTZ3jnzMLTcGJF2TPgzoKQhLIs4V0ZWdzbXVNOWYEvHTytS1acTgSfUJ9Vs\\oUxGBAyWRURHOGIWcgAu505pZ5fctJO2IdUJOMnKA8AG+wGa7vKckb2EWAs2k5Mi\\0RAxIDHbzD2TpYRzWg==\\-----END CERTIFICATE-----\\",
+          "key_pem": "-----BEGIN PRIVATE KEY-----\\MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCPDQ6vrJ3Ar1QN\\QgCfORa4c0E1Cc62IL37Gn6AnpLqUPfOMHDYTKWenb3Jm8hmZTq5rcna2deu7zbd\\/JgXtfUF3uhIbUoadkXuJY0BvAQsGjiZ44jE80b9Whlqm/UYWPwK6ol02GDTGEvz\\k0ujWAc6pF9OQr9b6qt7rtJHH0ONGSFfKr+Ey8j+K9/atcaojwFgBKXwP/ZoaHUa\\ABYVj/ejraUgBOkHDvn3YUcrr3h/30C0awjqEydXeV2og0A97CywfSu5CAYf8fNv\\bEg9/Hm+TTDRSjs5ZWDC7vNBZNi6O2mEixs+sVsjUSJvJOgQ209pUg7jZ//ECzwM\\2nHRUayTAgMBAAECggEAOWrTRz3wv8Nf6EZiu4YNkZFpTeGW39F6j8xNlFCRxY0k\\OdWFpbv2ChlkcQSfRkJBdP/FcptXj/aiPi3B2lqFc4rKDzAWu1JXtUPLOjP+NLl9\\mH8UiYDgMJa2du0MTm6BE9yZuZWUH4a0DZtEk9akaCxLuLzf1AP4Oper/TIWSg5/\\YGk/yxn3a8J5eyLfTAJDRnjbkVrrhF0PBCJ8kAWRkGowpNodXPRRSAX85I1OtAsy\\y83VGCAmCoCd1VO2CGt4JX9Mm7Zq8oLZrPGDILZ8e8tqbo4RQ7bdGzGnrCKGptnb\\5DEbMMNKj2EF1c4q8Tp10Pogintu7ZzKmw/gARd5eQKBgQDJDBw96OYugWeIpne+\\BdJCqh7977wlKKZ187hE2eDNlBfnJGNdggGUguzOnEjqFZcfP2B5divQxBPOZ1Co\\xTEhtJE87ILGFIsKRNqlAruIKDzu0QmtxBdpny4wwbTt0DkB70KTNdcgkQf+G+TV\\ZrqJTzgMDg5/RbfaE1OZDkVLhwKBgQC2JsUgBdxzR6QbH1+dV3bxweU1THflnYeX\\YBzkd+UQaFLYBnwLqQFifjknwAyDcZxkTmOv2dgJskoVOc5FVRPVAsJE5dBOfM0V\\zJhQJbN6Qm//ufZ+bySYsKysmpWfthqNXLsSvHYc1+mU1qHSzyKGcNVqOthET3WM\\sxd2pPFRlQKBgQCvVkR7Kdc1z92/q47axrDtOvj0dlQcBCvIytl2Ep6gK/v8thuC\\vZMrNlPYjSx6GoJF2jwFMi5cT+UGKcyKpA+JWbUg8RPMNLZeKlaVeqCaypz5mo1a\\Yp4Ym57pHsbwcJyHN2dUg6wu1s2lrCYShxlADzrOKKQ0E1WYdyp9XZjJmQKBgHtZ\\LcxNq8d1EDA9wqXuAOIeB3VcXyTi1Fsx/t7IQhomS1N2sLHEtOdZyqKcbtzkJp/W\\ZbNDtgR686gECSbyQgfRYnT9m15LLSZB8jL0FOIJ84YdDEr6QLIVkhkgZYpN6xUn\\YpeBgApwPAFKhzMWia644gyZ5LH9jQDGlnEFqVUxAoGAfhe+l71IN/wDN3aGZFpS\\HiaU1FO7c/P/xmr4f7vdcs2xL6YlFzGf20416WAy0CS1XZ/KKdYgWiWHAu1YRL8D\\x4fxt1lLahOeOlpQBrRTENTXP/luAgojpf+kKyb/8/6DHs2OHeQzMojqQ5oHuty1\\OR2xSdYkPODqqfcDbAYMCIQ=\\-----END PRIVATE KEY-----\\"
         }
+      },
+      "pr2.org1.localhost": {
+        "upstream": {
+          "base_url": "http://localhost:8081",
+          "timeout_ms": 5000,
+          "max_retries": 3
+        },
+        "tls": {
+          "cert_pem": "-----BEGIN CERTIFICATE-----\\MIIDCTCCAfGgAwIBAgIUQDnFRzFYv5FB16U/GTmwKcQhEWQwDQYJKoZIhvcNAQEL\\BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDcxNjEzNDczOVoXDTI3MDcx\\NjEzNDczOVowFDESMBAGA1UEAwwJbG9jYWxob3N0MIIBIjANBgkqhkiG9w0BAQEF\\AAOCAQ8AMIIBCgKCAQEAjw0Or6ydwK9UDUIAnzkWuHNBNQnOtiC9+xp+gJ6S6lD3\\zjBw2Eylnp29yZvIZmU6ua3J2tnXru823fyYF7X1Bd7oSG1KGnZF7iWNAbwELBo4\\meOIxPNG/VoZapv1GFj8CuqJdNhg0xhL85NLo1gHOqRfTkK/W+qre67SRx9DjRkh\\Xyq/hMvI/ivf2rXGqI8BYASl8D/2aGh1GgAWFY/3o62lIATpBw7592FHK694f99A\\tGsI6hMnV3ldqINAPewssH0ruQgGH/Hzb2xIPfx5vk0w0Uo7OWVgwu7zQWTYujtp\\hIsbPrFbI1EibyToENtPaVIO42f/xAs8DNpx0VGskwIDAQABo1MwUTAdBgNVHQ4E\\FgQURwWTCaN5UCBfyIR8j98IWuyQngIwHwYDVR0jBBgwFoAURwWTCaN5UCBfyIR8\\j98IWuyQngIwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEAVAp5\\/OB8LCy7qNZlmJSTw62WWclV1y9YJkGCh5FKm804XnDcUEpReXMT/UWd2Kw+eP2h\\MJDz23+UlZZWisGOZmKCbgEGBufjmNqajPw4p4/IIYjfd26MQN31WM6/LZ4efJZ2\\pM+D5xOqkvneHJVhU4D0X+vGAmU1rWUP0oqVBtHs0RG/IYvz9+3i5Tf+74MDAmbE\\eUeb3MTZ3jnzMLTcGJF2TPgzoKQhLIs4V0ZWdzbXVNOWYEvHTytS1acTgSfUJ9Vs\\oUxGBAyWRURHOGIWcgAu505pZ5fctJO2IdUJOMnKA8AG+wGa7vKckb2EWAs2k5Mi\\0RAxIDHbzD2TpYRzWg==\\-----END CERTIFICATE-----\\",
+          "key_pem": "-----BEGIN PRIVATE KEY-----\\MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCPDQ6vrJ3Ar1QN\\QgCfORa4c0E1Cc62IL37Gn6AnpLqUPfOMHDYTKWenb3Jm8hmZTq5rcna2deu7zbd\\/JgXtfUF3uhIbUoadkXuJY0BvAQsGjiZ44jE80b9Whlqm/UYWPwK6ol02GDTGEvz\\k0ujWAc6pF9OQr9b6qt7rtJHH0ONGSFfKr+Ey8j+K9/atcaojwFgBKXwP/ZoaHUa\\ABYVj/ejraUgBOkHDvn3YUcrr3h/30C0awjqEydXeV2og0A97CywfSu5CAYf8fNv\\bEg9/Hm+TTDRSjs5ZWDC7vNBZNi6O2mEixs+sVsjUSJvJOgQ209pUg7jZ//ECzwM\\2nHRUayTAgMBAAECggEAOWrTRz3wv8Nf6EZiu4YNkZFpTeGW39F6j8xNlFCRxY0k\\OdWFpbv2ChlkcQSfRkJBdP/FcptXj/aiPi3B2lqFc4rKDzAWu1JXtUPLOjP+NLl9\\mH8UiYDgMJa2du0MTm6BE9yZuZWUH4a0DZtEk9akaCxLuLzf1AP4Oper/TIWSg5/\\YGk/yxn3a8J5eyLfTAJDRnjbkVrrhF0PBCJ8kAWRkGowpNodXPRRSAX85I1OtAsy\\y83VGCAmCoCd1VO2CGt4JX9Mm7Zq8oLZrPGDILZ8e8tqbo4RQ7bdGzGnrCKGptnb\\5DEbMMNKj2EF1c4q8Tp10Pogintu7ZzKmw/gARd5eQKBgQDJDBw96OYugWeIpne+\\BdJCqh7977wlKKZ187hE2eDNlBfnJGNdggGUguzOnEjqFZcfP2B5divQxBPOZ1Co\\xTEhtJE87ILGFIsKRNqlAruIKDzu0QmtxBdpny4wwbTt0DkB70KTNdcgkQf+G+TV\\ZrqJTzgMDg5/RbfaE1OZDkVLhwKBgQC2JsUgBdxzR6QbH1+dV3bxweU1THflnYeX\\YBzkd+UQaFLYBnwLqQFifjknwAyDcZxkTmOv2dgJskoVOc5FVRPVAsJE5dBOfM0V\\zJhQJbN6Qm//ufZ+bySYsKysmpWfthqNXLsSvHYc1+mU1qHSzyKGcNVqOthET3WM\\sxd2pPFRlQKBgQCvVkR7Kdc1z92/q47axrDtOvj0dlQcBCvIytl2Ep6gK/v8thuC\\vZMrNlPYjSx6GoJF2jwFMi5cT+UGKcyKpA+JWbUg8RPMNLZeKlaVeqCaypz5mo1a\\Yp4Ym57pHsbwcJyHN2dUg6wu1s2lrCYShxlADzrOKKQ0E1WYdyp9XZjJmQKBgHtZ\\LcxNq8d1EDA9wqXuAOIeB3VcXyTi1Fsx/t7IQhomS1N2sLHEtOdZyqKcbtzkJp/W\\ZbNDtgR686gECSbyQgfRYnT9m15LLSZB8jL0FOIJ84YdDEr6QLIVkhkgZYpN6xUn\\YpeBgApwPAFKhzMWia644gyZ5LH9jQDGlnEFqVUxAoGAfhe+l71IN/wDN3aGZFpS\\HiaU1FO7c/P/xmr4f7vdcs2xL6YlFzGf20416WAy0CS1XZ/KKdYgWiWHAu1YRL8D\\x4fxt1lLahOeOlpQBrRTENTXP/luAgojpf+kKyb/8/6DHs2OHeQzMojqQ5oHuty1\\OR2xSdYkPODqqfcDbAYMCIQ=\\-----END PRIVATE KEY-----\\"
+        }
+      },
+      "sec1.org1.localhost": {
+        "upstream": {
+          "base_url": "http://localhost:8082",
+          "timeout_ms": 5000,
+          "max_retries": 3
+        },
+        "tls": {
+          "cert_pem": "-----BEGIN CERTIFICATE-----\\MIIDCTCCAfGgAwIBAgIUQDnFRzFYv5FB16U/GTmwKcQhEWQwDQYJKoZIhvcNAQEL\\BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDcxNjEzNDczOVoXDTI3MDcx\\NjEzNDczOVowFDESMBAGA1UEAwwJbG9jYWxob3N0MIIBIjANBgkqhkiG9w0BAQEF\\AAOCAQ8AMIIBCgKCAQEAjw0Or6ydwK9UDUIAnzkWuHNBNQnOtiC9+xp+gJ6S6lD3\\zjBw2Eylnp29yZvIZmU6ua3J2tnXru823fyYF7X1Bd7oSG1KGnZF7iWNAbwELBo4\\meOIxPNG/VoZapv1GFj8CuqJdNhg0xhL85NLo1gHOqRfTkK/W+qre67SRx9DjRkh\\Xyq/hMvI/ivf2rXGqI8BYASl8D/2aGh1GgAWFY/3o62lIATpBw7592FHK694f99A\\tGsI6hMnV3ldqINAPewssH0ruQgGH/Hzb2xIPfx5vk0w0Uo7OWVgwu7zQWTYujtp\\hIsbPrFbI1EibyToENtPaVIO42f/xAs8DNpx0VGskwIDAQABo1MwUTAdBgNVHQ4E\\FgQURwWTCaN5UCBfyIR8j98IWuyQngIwHwYDVR0jBBgwFoAURwWTCaN5UCBfyIR8\\j98IWuyQngIwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEAVAp5\\/OB8LCy7qNZlmJSTw62WWclV1y9YJkGCh5FKm804XnDcUEpReXMT/UWd2Kw+eP2h\\MJDz23+UlZZWisGOZmKCbgEGBufjmNqajPw4p4/IIYjfd26MQN31WM6/LZ4efJZ2\\pM+D5xOqkvneHJVhU4D0X+vGAmU1rWUP0oqVBtHs0RG/IYvz9+3i5Tf+74MDAmbE\\eUeb3MTZ3jnzMLTcGJF2TPgzoKQhLIs4V0ZWdzbXVNOWYEvHTytS1acTgSfUJ9Vs\\oUxGBAyWRURHOGIWcgAu505pZ5fctJO2IdUJOMnKA8AG+wGa7vKckb2EWAs2k5Mi\\0RAxIDHbzD2TpYRzWg==\\-----END CERTIFICATE-----\\",
+          "key_pem": "-----BEGIN PRIVATE KEY-----\\MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCPDQ6vrJ3Ar1QN\\QgCfORa4c0E1Cc62IL37Gn6AnpLqUPfOMHDYTKWenb3Jm8hmZTq5rcna2deu7zbd\\/JgXtfUF3uhIbUoadkXuJY0BvAQsGjiZ44jE80b9Whlqm/UYWPwK6ol02GDTGEvz\\k0ujWAc6pF9OQr9b6qt7rtJHH0ONGSFfKr+Ey8j+K9/atcaojwFgBKXwP/ZoaHUa\\ABYVj/ejraUgBOkHDvn3YUcrr3h/30C0awjqEydXeV2og0A97CywfSu5CAYf8fNv\\bEg9/Hm+TTDRSjs5ZWDC7vNBZNi6O2mEixs+sVsjUSJvJOgQ209pUg7jZ//ECzwM\\2nHRUayTAgMBAAECggEAOWrTRz3wv8Nf6EZiu4YNkZFpTeGW39F6j8xNlFCRxY0k\\OdWFpbv2ChlkcQSfRkJBdP/FcptXj/aiPi3B2lqFc4rKDzAWu1JXtUPLOjP+NLl9\\mH8UiYDgMJa2du0MTm6BE9yZuZWUH4a0DZtEk9akaCxLuLzf1AP4Oper/TIWSg5/\\YGk/yxn3a8J5eyLfTAJDRnjbkVrrhF0PBCJ8kAWRkGowpNodXPRRSAX85I1OtAsy\\y83VGCAmCoCd1VO2CGt4JX9Mm7Zq8oLZrPGDILZ8e8tqbo4RQ7bdGzGnrCKGptnb\\5DEbMMNKj2EF1c4q8Tp10Pogintu7ZzKmw/gARd5eQKBgQDJDBw96OYugWeIpne+\\BdJCqh7977wlKKZ187hE2eDNlBfnJGNdggGUguzOnEjqFZcfP2B5divQxBPOZ1Co\\xTEhtJE87ILGFIsKRNqlAruIKDzu0QmtxBdpny4wwbTt0DkB70KTNdcgkQf+G+TV\\ZrqJTzgMDg5/RbfaE1OZDkVLhwKBgQC2JsUgBdxzR6QbH1+dV3bxweU1THflnYeX\\YBzkd+UQaFLYBnwLqQFifjknwAyDcZxkTmOv2dgJskoVOc5FVRPVAsJE5dBOfM0V\\zJhQJbN6Qm//ufZ+bySYsKysmpWfthqNXLsSvHYc1+mU1qHSzyKGcNVqOthET3WM\\sxd2pPFRlQKBgQCvVkR7Kdc1z92/q47axrDtOvj0dlQcBCvIytl2Ep6gK/v8thuC\\vZMrNlPYjSx6GoJF2jwFMi5cT+UGKcyKpA+JWbUg8RPMNLZeKlaVeqCaypz5mo1a\\Yp4Ym57pHsbwcJyHN2dUg6wu1s2lrCYShxlADzrOKKQ0E1WYdyp9XZjJmQKBgHtZ\\LcxNq8d1EDA9wqXuAOIeB3VcXyTi1Fsx/t7IQhomS1N2sLHEtOdZyqKcbtzkJp/W\\ZbNDtgR686gECSbyQgfRYnT9m15LLSZB8jL0FOIJ84YdDEr6QLIVkhkgZYpN6xUn\\YpeBgApwPAFKhzMWia644gyZ5LH9jQDGlnEFqVUxAoGAfhe+l71IN/wDN3aGZFpS\\HiaU1FO7c/P/xmr4f7vdcs2xL6YlFzGf20416WAy0CS1XZ/KKdYgWiWHAu1YRL8D\\x4fxt1lLahOeOlpQBrRTENTXP/luAgojpf+kKyb/8/6DHs2OHeQzMojqQ5oHuty1\\OR2xSdYkPODqqfcDbAYMCIQ=\\-----END PRIVATE KEY-----\\"
+        }
+      }
     },
-    "org2": {
-        "id": "org2",
-        "name": "Organization 2",
+    "apps": {
+      "web-app": {
         "domains": {
-            "pr1.org2.localhost": {
-                "upstream": {"base_url": "http://localhost:9080", "timeout_ms": 5000, "max_retries": 3},
-                "tls": {"cert_pem": "", "key_pem": ""}
-            },
-            "pr2.org2.localhost": {
-                "upstream": {"base_url": "http://localhost:9081", "timeout_ms": 5000, "max_retries": 3},
-                "tls": {"cert_pem": "", "key_pem": ""}
-            },
-            "sec1.org2.localhost": {
-                "upstream": {"base_url": "http://localhost:9082", "timeout_ms": 5000, "max_retries": 3},
-                "tls": {"cert_pem": "", "key_pem": ""}
-            }
+          "pr1.org1.localhost": {
+            "paths": [
+              "/api",
+              "/web"
+            ],
+            "type": "primary"
+          },
+          "pr2.org1.localhost": {
+            "paths": [
+              "/api"
+            ],
+            "type": "primary"
+          },
+          "sec1.org1.localhost": {
+            "paths": [
+              "/api"
+            ],
+            "type": "dependency"
+          }
         },
-        "apps": {
-            "admin-panel": {
-                "domains": {
-                    "pr1.org2.localhost": {"paths": ["/admin", "/dashboard"], "type": "primary"},
-                    "pr2.org2.localhost": {"paths": ["/admin"], "type": "primary"},
-                    "sec1.org2.localhost": {"paths": ["/admin"], "type": "dependency"}
-                },
-                "policies": [{"id": "pol-3", "name": "Admin access", "effect": "Allow", "rules": [{"methods": ["GET", "POST", "PUT", "DELETE"], "conditions": []}]}]
-            },
-            "public-site": {
-                "domains": {
-                    "pr1.org2.localhost": {"paths": ["/", "/about"], "type": "primary"},
-                    "pr2.org2.localhost": {"paths": ["/"], "type": "primary"}
-                },
-                "policies": [{"id": "pol-4", "name": "Public access", "effect": "Allow", "rules": [{"methods": ["GET"], "conditions": []}]}]
-            }
+        "policies": [
+          {
+            "id": "pol-1",
+            "name": "Allow all",
+            "effect": "Allow",
+            "rules": [
+              {
+                "methods": [
+                  "GET",
+                  "POST"
+                ],
+                "conditions": []
+              }
+            ]
+          }
+        ]
+      },
+      "mobile-app": {
+        "domains": {
+          "pr1.org1.localhost": {
+            "paths": [
+              "/mobile"
+            ],
+            "type": "primary"
+          },
+          "pr2.org1.localhost": {
+            "paths": [
+              "/mobile"
+            ],
+            "type": "primary"
+          }
         },
-        "auth": {
-            "jwt_issuer": "https://auth2.example.com",
-            "jwt_audience": "quicguard",
-            "jwt_public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAQeCD7cQSeJ3XWrfU1OpnPURRPwAmr+dVwHAySm2v3zo=\n-----END PUBLIC KEY-----",
-            "jwt_private_key": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEICiHg2HNKs7xIdIwlxNum1reFIq/HMFF/Qz5EtBROCWH\n-----END PRIVATE KEY-----",
-            "cookie_name": "session_token",
-            "idp_url": "http://localhost:3002",
-            "redirect_url": "",
-            "req_param_name": "req",
-            "token_param_name": "token"
-        }
+        "policies": [
+          {
+            "id": "pol-2",
+            "name": "Allow mobile",
+            "effect": "Allow",
+            "rules": [
+              {
+                "methods": [
+                  "GET"
+                ],
+                "conditions": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "auth": {
+      "jwt_issuer": "https://auth.example.com",
+      "jwt_audience": "quicguard",
+      "jwt_public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAQeCD7cQSeJ3XWrfU1OpnPURRPwAmr+dVwHAySm2v3zo=\n-----END PUBLIC KEY-----",
+      "jwt_private_key": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEICiHg2HNKs7xIdIwlxNum1reFIq/HMFF/Qz5EtBROCWH\n-----END PRIVATE KEY-----",
+      "cookie_name": "session_token",
+      "idp_url": "http://localhost:3001",
+      "redirect_url": "",
+      "req_param_name": "req",
+      "token_param_name": "token"
     }
+  },
+  "org2": {
+    "id": "org2",
+    "name": "Organization 2",
+    "domains": {
+      "pr1.org2.localhost": {
+        "upstream": {
+          "base_url": "http://localhost:9080",
+          "timeout_ms": 5000,
+          "max_retries": 3
+        },
+        "tls": {
+          "cert_pem": "-----BEGIN CERTIFICATE-----\\MIIDCTCCAfGgAwIBAgIUQDnFRzFYv5FB16U/GTmwKcQhEWQwDQYJKoZIhvcNAQEL\\BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDcxNjEzNDczOVoXDTI3MDcx\\NjEzNDczOVowFDESMBAGA1UEAwwJbG9jYWxob3N0MIIBIjANBgkqhkiG9w0BAQEF\\AAOCAQ8AMIIBCgKCAQEAjw0Or6ydwK9UDUIAnzkWuHNBNQnOtiC9+xp+gJ6S6lD3\\zjBw2Eylnp29yZvIZmU6ua3J2tnXru823fyYF7X1Bd7oSG1KGnZF7iWNAbwELBo4\\meOIxPNG/VoZapv1GFj8CuqJdNhg0xhL85NLo1gHOqRfTkK/W+qre67SRx9DjRkh\\Xyq/hMvI/ivf2rXGqI8BYASl8D/2aGh1GgAWFY/3o62lIATpBw7592FHK694f99A\\tGsI6hMnV3ldqINAPewssH0ruQgGH/Hzb2xIPfx5vk0w0Uo7OWVgwu7zQWTYujtp\\hIsbPrFbI1EibyToENtPaVIO42f/xAs8DNpx0VGskwIDAQABo1MwUTAdBgNVHQ4E\\FgQURwWTCaN5UCBfyIR8j98IWuyQngIwHwYDVR0jBBgwFoAURwWTCaN5UCBfyIR8\\j98IWuyQngIwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEAVAp5\\/OB8LCy7qNZlmJSTw62WWclV1y9YJkGCh5FKm804XnDcUEpReXMT/UWd2Kw+eP2h\\MJDz23+UlZZWisGOZmKCbgEGBufjmNqajPw4p4/IIYjfd26MQN31WM6/LZ4efJZ2\\pM+D5xOqkvneHJVhU4D0X+vGAmU1rWUP0oqVBtHs0RG/IYvz9+3i5Tf+74MDAmbE\\eUeb3MTZ3jnzMLTcGJF2TPgzoKQhLIs4V0ZWdzbXVNOWYEvHTytS1acTgSfUJ9Vs\\oUxGBAyWRURHOGIWcgAu505pZ5fctJO2IdUJOMnKA8AG+wGa7vKckb2EWAs2k5Mi\\0RAxIDHbzD2TpYRzWg==\\-----END CERTIFICATE-----\\",
+          "key_pem": "-----BEGIN PRIVATE KEY-----\\MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCPDQ6vrJ3Ar1QN\\QgCfORa4c0E1Cc62IL37Gn6AnpLqUPfOMHDYTKWenb3Jm8hmZTq5rcna2deu7zbd\\/JgXtfUF3uhIbUoadkXuJY0BvAQsGjiZ44jE80b9Whlqm/UYWPwK6ol02GDTGEvz\\k0ujWAc6pF9OQr9b6qt7rtJHH0ONGSFfKr+Ey8j+K9/atcaojwFgBKXwP/ZoaHUa\\ABYVj/ejraUgBOkHDvn3YUcrr3h/30C0awjqEydXeV2og0A97CywfSu5CAYf8fNv\\bEg9/Hm+TTDRSjs5ZWDC7vNBZNi6O2mEixs+sVsjUSJvJOgQ209pUg7jZ//ECzwM\\2nHRUayTAgMBAAECggEAOWrTRz3wv8Nf6EZiu4YNkZFpTeGW39F6j8xNlFCRxY0k\\OdWFpbv2ChlkcQSfRkJBdP/FcptXj/aiPi3B2lqFc4rKDzAWu1JXtUPLOjP+NLl9\\mH8UiYDgMJa2du0MTm6BE9yZuZWUH4a0DZtEk9akaCxLuLzf1AP4Oper/TIWSg5/\\YGk/yxn3a8J5eyLfTAJDRnjbkVrrhF0PBCJ8kAWRkGowpNodXPRRSAX85I1OtAsy\\y83VGCAmCoCd1VO2CGt4JX9Mm7Zq8oLZrPGDILZ8e8tqbo4RQ7bdGzGnrCKGptnb\\5DEbMMNKj2EF1c4q8Tp10Pogintu7ZzKmw/gARd5eQKBgQDJDBw96OYugWeIpne+\\BdJCqh7977wlKKZ187hE2eDNlBfnJGNdggGUguzOnEjqFZcfP2B5divQxBPOZ1Co\\xTEhtJE87ILGFIsKRNqlAruIKDzu0QmtxBdpny4wwbTt0DkB70KTNdcgkQf+G+TV\\ZrqJTzgMDg5/RbfaE1OZDkVLhwKBgQC2JsUgBdxzR6QbH1+dV3bxweU1THflnYeX\\YBzkd+UQaFLYBnwLqQFifjknwAyDcZxkTmOv2dgJskoVOc5FVRPVAsJE5dBOfM0V\\zJhQJbN6Qm//ufZ+bySYsKysmpWfthqNXLsSvHYc1+mU1qHSzyKGcNVqOthET3WM\\sxd2pPFRlQKBgQCvVkR7Kdc1z92/q47axrDtOvj0dlQcBCvIytl2Ep6gK/v8thuC\\vZMrNlPYjSx6GoJF2jwFMi5cT+UGKcyKpA+JWbUg8RPMNLZeKlaVeqCaypz5mo1a\\Yp4Ym57pHsbwcJyHN2dUg6wu1s2lrCYShxlADzrOKKQ0E1WYdyp9XZjJmQKBgHtZ\\LcxNq8d1EDA9wqXuAOIeB3VcXyTi1Fsx/t7IQhomS1N2sLHEtOdZyqKcbtzkJp/W\\ZbNDtgR686gECSbyQgfRYnT9m15LLSZB8jL0FOIJ84YdDEr6QLIVkhkgZYpN6xUn\\YpeBgApwPAFKhzMWia644gyZ5LH9jQDGlnEFqVUxAoGAfhe+l71IN/wDN3aGZFpS\\HiaU1FO7c/P/xmr4f7vdcs2xL6YlFzGf20416WAy0CS1XZ/KKdYgWiWHAu1YRL8D\\x4fxt1lLahOeOlpQBrRTENTXP/luAgojpf+kKyb/8/6DHs2OHeQzMojqQ5oHuty1\\OR2xSdYkPODqqfcDbAYMCIQ=\\-----END PRIVATE KEY-----\\"
+        }
+      },
+      "pr2.org2.localhost": {
+        "upstream": {
+          "base_url": "http://localhost:9081",
+          "timeout_ms": 5000,
+          "max_retries": 3
+        },
+        "tls": {
+          "cert_pem": "-----BEGIN CERTIFICATE-----\\MIIDCTCCAfGgAwIBAgIUQDnFRzFYv5FB16U/GTmwKcQhEWQwDQYJKoZIhvcNAQEL\\BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDcxNjEzNDczOVoXDTI3MDcx\\NjEzNDczOVowFDESMBAGA1UEAwwJbG9jYWxob3N0MIIBIjANBgkqhkiG9w0BAQEF\\AAOCAQ8AMIIBCgKCAQEAjw0Or6ydwK9UDUIAnzkWuHNBNQnOtiC9+xp+gJ6S6lD3\\zjBw2Eylnp29yZvIZmU6ua3J2tnXru823fyYF7X1Bd7oSG1KGnZF7iWNAbwELBo4\\meOIxPNG/VoZapv1GFj8CuqJdNhg0xhL85NLo1gHOqRfTkK/W+qre67SRx9DjRkh\\Xyq/hMvI/ivf2rXGqI8BYASl8D/2aGh1GgAWFY/3o62lIATpBw7592FHK694f99A\\tGsI6hMnV3ldqINAPewssH0ruQgGH/Hzb2xIPfx5vk0w0Uo7OWVgwu7zQWTYujtp\\hIsbPrFbI1EibyToENtPaVIO42f/xAs8DNpx0VGskwIDAQABo1MwUTAdBgNVHQ4E\\FgQURwWTCaN5UCBfyIR8j98IWuyQngIwHwYDVR0jBBgwFoAURwWTCaN5UCBfyIR8\\j98IWuyQngIwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEAVAp5\\/OB8LCy7qNZlmJSTw62WWclV1y9YJkGCh5FKm804XnDcUEpReXMT/UWd2Kw+eP2h\\MJDz23+UlZZWisGOZmKCbgEGBufjmNqajPw4p4/IIYjfd26MQN31WM6/LZ4efJZ2\\pM+D5xOqkvneHJVhU4D0X+vGAmU1rWUP0oqVBtHs0RG/IYvz9+3i5Tf+74MDAmbE\\eUeb3MTZ3jnzMLTcGJF2TPgzoKQhLIs4V0ZWdzbXVNOWYEvHTytS1acTgSfUJ9Vs\\oUxGBAyWRURHOGIWcgAu505pZ5fctJO2IdUJOMnKA8AG+wGa7vKckb2EWAs2k5Mi\\0RAxIDHbzD2TpYRzWg==\\-----END CERTIFICATE-----\\",
+          "key_pem": "-----BEGIN PRIVATE KEY-----\\MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCPDQ6vrJ3Ar1QN\\QgCfORa4c0E1Cc62IL37Gn6AnpLqUPfOMHDYTKWenb3Jm8hmZTq5rcna2deu7zbd\\/JgXtfUF3uhIbUoadkXuJY0BvAQsGjiZ44jE80b9Whlqm/UYWPwK6ol02GDTGEvz\\k0ujWAc6pF9OQr9b6qt7rtJHH0ONGSFfKr+Ey8j+K9/atcaojwFgBKXwP/ZoaHUa\\ABYVj/ejraUgBOkHDvn3YUcrr3h/30C0awjqEydXeV2og0A97CywfSu5CAYf8fNv\\bEg9/Hm+TTDRSjs5ZWDC7vNBZNi6O2mEixs+sVsjUSJvJOgQ209pUg7jZ//ECzwM\\2nHRUayTAgMBAAECggEAOWrTRz3wv8Nf6EZiu4YNkZFpTeGW39F6j8xNlFCRxY0k\\OdWFpbv2ChlkcQSfRkJBdP/FcptXj/aiPi3B2lqFc4rKDzAWu1JXtUPLOjP+NLl9\\mH8UiYDgMJa2du0MTm6BE9yZuZWUH4a0DZtEk9akaCxLuLzf1AP4Oper/TIWSg5/\\YGk/yxn3a8J5eyLfTAJDRnjbkVrrhF0PBCJ8kAWRkGowpNodXPRRSAX85I1OtAsy\\y83VGCAmCoCd1VO2CGt4JX9Mm7Zq8oLZrPGDILZ8e8tqbo4RQ7bdGzGnrCKGptnb\\5DEbMMNKj2EF1c4q8Tp10Pogintu7ZzKmw/gARd5eQKBgQDJDBw96OYugWeIpne+\\BdJCqh7977wlKKZ187hE2eDNlBfnJGNdggGUguzOnEjqFZcfP2B5divQxBPOZ1Co\\xTEhtJE87ILGFIsKRNqlAruIKDzu0QmtxBdpny4wwbTt0DkB70KTNdcgkQf+G+TV\\ZrqJTzgMDg5/RbfaE1OZDkVLhwKBgQC2JsUgBdxzR6QbH1+dV3bxweU1THflnYeX\\YBzkd+UQaFLYBnwLqQFifjknwAyDcZxkTmOv2dgJskoVOc5FVRPVAsJE5dBOfM0V\\zJhQJbN6Qm//ufZ+bySYsKysmpWfthqNXLsSvHYc1+mU1qHSzyKGcNVqOthET3WM\\sxd2pPFRlQKBgQCvVkR7Kdc1z92/q47axrDtOvj0dlQcBCvIytl2Ep6gK/v8thuC\\vZMrNlPYjSx6GoJF2jwFMi5cT+UGKcyKpA+JWbUg8RPMNLZeKlaVeqCaypz5mo1a\\Yp4Ym57pHsbwcJyHN2dUg6wu1s2lrCYShxlADzrOKKQ0E1WYdyp9XZjJmQKBgHtZ\\LcxNq8d1EDA9wqXuAOIeB3VcXyTi1Fsx/t7IQhomS1N2sLHEtOdZyqKcbtzkJp/W\\ZbNDtgR686gECSbyQgfRYnT9m15LLSZB8jL0FOIJ84YdDEr6QLIVkhkgZYpN6xUn\\YpeBgApwPAFKhzMWia644gyZ5LH9jQDGlnEFqVUxAoGAfhe+l71IN/wDN3aGZFpS\\HiaU1FO7c/P/xmr4f7vdcs2xL6YlFzGf20416WAy0CS1XZ/KKdYgWiWHAu1YRL8D\\x4fxt1lLahOeOlpQBrRTENTXP/luAgojpf+kKyb/8/6DHs2OHeQzMojqQ5oHuty1\\OR2xSdYkPODqqfcDbAYMCIQ=\\-----END PRIVATE KEY-----\\"
+        }
+      },
+      "sec1.org2.localhost": {
+        "upstream": {
+          "base_url": "http://localhost:9082",
+          "timeout_ms": 5000,
+          "max_retries": 3
+        },
+        "tls": {
+          "cert_pem": "-----BEGIN CERTIFICATE-----\\MIIDCTCCAfGgAwIBAgIUQDnFRzFYv5FB16U/GTmwKcQhEWQwDQYJKoZIhvcNAQEL\\BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDcxNjEzNDczOVoXDTI3MDcx\\NjEzNDczOVowFDESMBAGA1UEAwwJbG9jYWxob3N0MIIBIjANBgkqhkiG9w0BAQEF\\AAOCAQ8AMIIBCgKCAQEAjw0Or6ydwK9UDUIAnzkWuHNBNQnOtiC9+xp+gJ6S6lD3\\zjBw2Eylnp29yZvIZmU6ua3J2tnXru823fyYF7X1Bd7oSG1KGnZF7iWNAbwELBo4\\meOIxPNG/VoZapv1GFj8CuqJdNhg0xhL85NLo1gHOqRfTkK/W+qre67SRx9DjRkh\\Xyq/hMvI/ivf2rXGqI8BYASl8D/2aGh1GgAWFY/3o62lIATpBw7592FHK694f99A\\tGsI6hMnV3ldqINAPewssH0ruQgGH/Hzb2xIPfx5vk0w0Uo7OWVgwu7zQWTYujtp\\hIsbPrFbI1EibyToENtPaVIO42f/xAs8DNpx0VGskwIDAQABo1MwUTAdBgNVHQ4E\\FgQURwWTCaN5UCBfyIR8j98IWuyQngIwHwYDVR0jBBgwFoAURwWTCaN5UCBfyIR8\\j98IWuyQngIwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEAVAp5\\/OB8LCy7qNZlmJSTw62WWclV1y9YJkGCh5FKm804XnDcUEpReXMT/UWd2Kw+eP2h\\MJDz23+UlZZWisGOZmKCbgEGBufjmNqajPw4p4/IIYjfd26MQN31WM6/LZ4efJZ2\\pM+D5xOqkvneHJVhU4D0X+vGAmU1rWUP0oqVBtHs0RG/IYvz9+3i5Tf+74MDAmbE\\eUeb3MTZ3jnzMLTcGJF2TPgzoKQhLIs4V0ZWdzbXVNOWYEvHTytS1acTgSfUJ9Vs\\oUxGBAyWRURHOGIWcgAu505pZ5fctJO2IdUJOMnKA8AG+wGa7vKckb2EWAs2k5Mi\\0RAxIDHbzD2TpYRzWg==\\-----END CERTIFICATE-----\\",
+          "key_pem": "-----BEGIN PRIVATE KEY-----\\MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCPDQ6vrJ3Ar1QN\\QgCfORa4c0E1Cc62IL37Gn6AnpLqUPfOMHDYTKWenb3Jm8hmZTq5rcna2deu7zbd\\/JgXtfUF3uhIbUoadkXuJY0BvAQsGjiZ44jE80b9Whlqm/UYWPwK6ol02GDTGEvz\\k0ujWAc6pF9OQr9b6qt7rtJHH0ONGSFfKr+Ey8j+K9/atcaojwFgBKXwP/ZoaHUa\\ABYVj/ejraUgBOkHDvn3YUcrr3h/30C0awjqEydXeV2og0A97CywfSu5CAYf8fNv\\bEg9/Hm+TTDRSjs5ZWDC7vNBZNi6O2mEixs+sVsjUSJvJOgQ209pUg7jZ//ECzwM\\2nHRUayTAgMBAAECggEAOWrTRz3wv8Nf6EZiu4YNkZFpTeGW39F6j8xNlFCRxY0k\\OdWFpbv2ChlkcQSfRkJBdP/FcptXj/aiPi3B2lqFc4rKDzAWu1JXtUPLOjP+NLl9\\mH8UiYDgMJa2du0MTm6BE9yZuZWUH4a0DZtEk9akaCxLuLzf1AP4Oper/TIWSg5/\\YGk/yxn3a8J5eyLfTAJDRnjbkVrrhF0PBCJ8kAWRkGowpNodXPRRSAX85I1OtAsy\\y83VGCAmCoCd1VO2CGt4JX9Mm7Zq8oLZrPGDILZ8e8tqbo4RQ7bdGzGnrCKGptnb\\5DEbMMNKj2EF1c4q8Tp10Pogintu7ZzKmw/gARd5eQKBgQDJDBw96OYugWeIpne+\\BdJCqh7977wlKKZ187hE2eDNlBfnJGNdggGUguzOnEjqFZcfP2B5divQxBPOZ1Co\\xTEhtJE87ILGFIsKRNqlAruIKDzu0QmtxBdpny4wwbTt0DkB70KTNdcgkQf+G+TV\\ZrqJTzgMDg5/RbfaE1OZDkVLhwKBgQC2JsUgBdxzR6QbH1+dV3bxweU1THflnYeX\\YBzkd+UQaFLYBnwLqQFifjknwAyDcZxkTmOv2dgJskoVOc5FVRPVAsJE5dBOfM0V\\zJhQJbN6Qm//ufZ+bySYsKysmpWfthqNXLsSvHYc1+mU1qHSzyKGcNVqOthET3WM\\sxd2pPFRlQKBgQCvVkR7Kdc1z92/q47axrDtOvj0dlQcBCvIytl2Ep6gK/v8thuC\\vZMrNlPYjSx6GoJF2jwFMi5cT+UGKcyKpA+JWbUg8RPMNLZeKlaVeqCaypz5mo1a\\Yp4Ym57pHsbwcJyHN2dUg6wu1s2lrCYShxlADzrOKKQ0E1WYdyp9XZjJmQKBgHtZ\\LcxNq8d1EDA9wqXuAOIeB3VcXyTi1Fsx/t7IQhomS1N2sLHEtOdZyqKcbtzkJp/W\\ZbNDtgR686gECSbyQgfRYnT9m15LLSZB8jL0FOIJ84YdDEr6QLIVkhkgZYpN6xUn\\YpeBgApwPAFKhzMWia644gyZ5LH9jQDGlnEFqVUxAoGAfhe+l71IN/wDN3aGZFpS\\HiaU1FO7c/P/xmr4f7vdcs2xL6YlFzGf20416WAy0CS1XZ/KKdYgWiWHAu1YRL8D\\x4fxt1lLahOeOlpQBrRTENTXP/luAgojpf+kKyb/8/6DHs2OHeQzMojqQ5oHuty1\\OR2xSdYkPODqqfcDbAYMCIQ=\\-----END PRIVATE KEY-----\\"
+        }
+      }
+    },
+    "apps": {
+      "admin-panel": {
+        "domains": {
+          "pr1.org2.localhost": {
+            "paths": [
+              "/admin",
+              "/dashboard"
+            ],
+            "type": "primary"
+          },
+          "pr2.org2.localhost": {
+            "paths": [
+              "/admin"
+            ],
+            "type": "primary"
+          },
+          "sec1.org2.localhost": {
+            "paths": [
+              "/admin"
+            ],
+            "type": "dependency"
+          }
+        },
+        "policies": [
+          {
+            "id": "pol-3",
+            "name": "Admin access",
+            "effect": "Allow",
+            "rules": [
+              {
+                "methods": [
+                  "GET",
+                  "POST",
+                  "PUT",
+                  "DELETE"
+                ],
+                "conditions": []
+              }
+            ]
+          }
+        ]
+      },
+      "public-site": {
+        "domains": {
+          "pr1.org2.localhost": {
+            "paths": [
+              "/",
+              "/about"
+            ],
+            "type": "primary"
+          },
+          "pr2.org2.localhost": {
+            "paths": [
+              "/"
+            ],
+            "type": "primary"
+          }
+        },
+        "policies": [
+          {
+            "id": "pol-4",
+            "name": "Public access",
+            "effect": "Allow",
+            "rules": [
+              {
+                "methods": [
+                  "GET"
+                ],
+                "conditions": []
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "auth": {
+      "jwt_issuer": "https://auth2.example.com",
+      "jwt_audience": "quicguard",
+      "jwt_public_key": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAQeCD7cQSeJ3XWrfU1OpnPURRPwAmr+dVwHAySm2v3zo=\n-----END PUBLIC KEY-----",
+      "jwt_private_key": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEICiHg2HNKs7xIdIwlxNum1reFIq/HMFF/Qz5EtBROCWH\n-----END PRIVATE KEY-----",
+      "cookie_name": "session_token",
+      "idp_url": "http://localhost:3002",
+      "redirect_url": "",
+      "req_param_name": "req",
+      "token_param_name": "token"
+    }
+  }
 }
