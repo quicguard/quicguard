@@ -1,0 +1,91 @@
+services:
+  redis:
+    image: redis:7.2-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - quicguard-net
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: quicguard
+      POSTGRES_USER: quicguard
+      POSTGRES_PASSWORD: quicguard
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - quicguard-net
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dashboard
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://quicguard:quicguard@postgres:5432/quicguard
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: secret
+      RUST_LOG: info
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - quicguard-net
+
+  auth:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.auth
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      REDIS_URL: redis://redis:6379
+      REDIS_ORG_KEY: quicguard:organizations
+      AUTH_SERVER_PORT: "3001"
+      RUST_LOG: info
+    depends_on:
+      - redis
+    networks:
+      - quicguard-net
+
+  quicguard:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.quicguard
+    restart: unless-stopped
+    ports:
+      - "4433:4433/udp"
+    environment:
+      RUST_LOG: info
+    command: ["./quicguard", "--listen", "0.0.0.0:4433", "--redis-url", "redis://redis:6379", "--redis-org-key", "quicguard:organizations"]
+    depends_on:
+      redis:
+        condition: service_healthy
+    privileged: true
+    networks:
+      - quicguard-net
+
+volumes:
+  redis-data:
+    driver: local
+  pgdata:
+    driver: local
+
+networks:
+  quicguard-net:
+    driver: bridge

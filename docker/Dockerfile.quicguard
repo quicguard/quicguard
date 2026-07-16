@@ -1,0 +1,10 @@
+FROM quic:base
+
+WORKDIR /app
+
+# Copy the pre-built binary
+COPY target/release/server /app/quicguard
+
+EXPOSE 4433
+
+CMD ["./quicguard", "--listen", "0.0.0.0:4433"]
