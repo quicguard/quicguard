@@ -306,16 +306,29 @@ async fn run_server(args: Args) -> Result<()> {
         token_param_name: "token".to_string(),
     };
 
-    let proxy_state = match ProxyState::from_redis(redis_config.clone(), auth_config).await {
-        Ok(state) => {
-            info!("Loaded configuration from Redis");
-            Arc::new(state)
+    // Retry connecting to Redis up to 5 times with 2 second delays
+    let mut proxy_state = None;
+    for attempt in 1..=5 {
+        match ProxyState::from_redis(redis_config.clone(), auth_config.clone()).await {
+            Ok(state) => {
+                info!("Loaded configuration from Redis (attempt {})", attempt);
+                proxy_state = Some(Arc::new(state));
+                break;
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to load config from Redis (attempt {}/5): {}. Retrying in 2 seconds...",
+                    attempt, e
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
         }
-        Err(e) => {
-            warn!(
-                "Failed to load config from Redis: {}. Starting with empty config.",
-                e
-            );
+    }
+
+    let proxy_state = match proxy_state {
+        Some(state) => state,
+        None => {
+            warn!("Failed to connect to Redis after 5 attempts. Starting with empty config.");
             Arc::new(ProxyState::empty(redis_config))
         }
     };
@@ -446,45 +459,45 @@ async fn run_server(args: Args) -> Result<()> {
 
     // Task: Read from TUN and route to appropriate client
     //temp commented
-    // let tun_read_task = tokio::spawn(async move {
-    //     let mut buf = vec![0u8; MAX_PACKET_SIZE];
-    //     loop {
-    //         let n = {
-    //             let mut tun = tun_reader_handle.lock().await;
-    //             match tun.read(&mut buf).await {
-    //                 Ok(n) if n > 0 => n,
-    //                 Ok(_) => continue,
-    //                 Err(e) => {
-    //                     error!("Error reading from TUN: {}", e);
-    //                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    //                     continue;
-    //                 }
-    //             }
-    //         };
+    let tun_read_task = tokio::spawn(async move {
+        let mut buf = vec![0u8; MAX_PACKET_SIZE];
+        loop {
+            let n = {
+                let mut tun = tun_reader_handle.lock().await;
+                match tun.read(&mut buf).await {
+                    Ok(n) if n > 0 => n,
+                    Ok(_) => continue,
+                    Err(e) => {
+                        error!("Error reading from TUN: {}", e);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        continue;
+                    }
+                }
+            };
 
-    //         // Extract destination IP from packet
-    //         if let Some(dest_ip) = protocol::extract_dest_ip(&buf[..n]) {
-    //             if let std::net::IpAddr::V4(dest_ipv4) = dest_ip {
-    //                 // Find client with this IP
-    //                 let client_id = {
-    //                     let ip_map = ip_to_client_for_tun.read().await;
-    //                     ip_map.get(&dest_ipv4).copied()
-    //                 };
+            // Extract destination IP from packet
+            if let Some(dest_ip) = protocol::extract_dest_ip(&buf[..n]) {
+                if let std::net::IpAddr::V4(dest_ipv4) = dest_ip {
+                    // Find client with this IP
+                    let client_id = {
+                        let ip_map = ip_to_client_for_tun.read().await;
+                        ip_map.get(&dest_ipv4).copied()
+                    };
 
-    //                 if let Some(client_id) = client_id {
-    //                     let clients = clients_for_tun.read().await;
-    //                     if let Some(session) = clients.get(&client_id) {
-    //                         if let Err(e) = session.tx.send(buf[..n].to_vec()).await {
-    //                             debug!("Failed to send to client: {}", e);
-    //                         }
-    //                     }
-    //                 } else {
-    //                     debug!("No client found for destination IP: {}", dest_ipv4);
-    //                 }
-    //             }
-    //         }
-    //     }
-    // });
+                    if let Some(client_id) = client_id {
+                        let clients = clients_for_tun.read().await;
+                        if let Some(session) = clients.get(&client_id) {
+                            if let Err(e) = session.tx.send(buf[..n].to_vec()).await {
+                                debug!("Failed to send to client: {}", e);
+                            }
+                        }
+                    } else {
+                        debug!("No client found for destination IP: {}", dest_ipv4);
+                    }
+                }
+            }
+        }
+    });
 
     // Accept connections
     let mut server = server;
@@ -516,7 +529,7 @@ async fn run_server(args: Args) -> Result<()> {
         });
     }
 
-    //tun_read_task.abort();
+    tun_read_task.abort();
     Ok(())
 }
 
