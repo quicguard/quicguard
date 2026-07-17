@@ -79,6 +79,7 @@ rustls = "0.21"
 rustls-pemfile = "1"
 rcgen = "0.12"
 time = "0.3"
+tokio-rustls = "0.24"
 
 # Konfig - config loading from Redis and request validation
 konfig = { path = "konfig" }

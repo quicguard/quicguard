@@ -70,9 +70,10 @@ services:
     restart: unless-stopped
     ports:
       - "4433:4433/udp"
+      - "4434:4434/tcp"
     environment:
-      RUST_LOG: info
-    command: ["./quicguard", "--listen", "0.0.0.0:4433", "--redis-url", "redis://redis:6379", "--redis-org-key", "quicguard:organizations"]
+      RUST_LOG: debug
+    command: ["./quicguard", "--listen", "0.0.0.0:4433", "--listen-tcp", "0.0.0.0:4434", "--redis-url", "redis://redis:6379", "--redis-org-key", "quicguard:organizations", "--verbose"]
     depends_on:
       redis:
         condition: service_healthy

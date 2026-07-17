@@ -165,6 +165,36 @@ else
     fail "QuicGuard not running properly"
 fi
 
+# Test 18: HTTP/2 with Alt-Svc header
+testn 18 "QuicGuard: HTTP/2 with Alt-Svc Header"
+QC_TCP_PORT=4434
+CURL="env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy curl -k -s --max-time 5 --resolve ${QC_DOMAIN}:${QC_TCP_PORT}:127.0.0.1 'https://${QC_DOMAIN}:${QC_TCP_PORT}/' -D -"
+curlcmd "$CURL"
+HEADERS=$(env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy curl -k -s --max-time 5 --resolve "${QC_DOMAIN}:${QC_TCP_PORT}:127.0.0.1" "https://${QC_DOMAIN}:${QC_TCP_PORT}/" -D - 2>/dev/null || echo "")
+if echo "$HEADERS" | grep -qi "alt-svc.*h3"; then
+    pass "HTTP/2 returns Alt-Svc header for HTTP/3 upgrade"
+else
+    fail "Alt-Svc header not found"
+fi
+
+# Test 19: HTTP/2 domain exists check
+testn 19 "QuicGuard: HTTP/2 Domain Check"
+BODY=$(env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy curl -k -s --max-time 5 --resolve "${QC_DOMAIN}:${QC_TCP_PORT}:127.0.0.1" "https://${QC_DOMAIN}:${QC_TCP_PORT}/" 2>/dev/null || echo "")
+if echo "$BODY" | grep -q "configured"; then
+    pass "HTTP/2 confirms domain is configured"
+else
+    fail "HTTP/2 domain check failed"
+fi
+
+# Test 20: HTTP/2 invalid domain
+testn 20 "QuicGuard: HTTP/2 Invalid Domain"
+STATUS=$(env -u HTTPS_PROXY -u HTTP_PROXY -u https_proxy -u http_proxy curl -k -s --max-time 5 --resolve "invalid.example.com:${QC_TCP_PORT}:127.0.0.1" "https://invalid.example.com:${QC_TCP_PORT}/" -o /dev/null -w '%{http_code}' 2>/dev/null || echo "000")
+if [[ "$STATUS" == "404" || "$STATUS" == "000" ]]; then
+    pass "Invalid domain rejected ($STATUS)"
+else
+    fail "Invalid domain should return 404" "Got: $STATUS"
+fi
+
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════

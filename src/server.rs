@@ -1,6 +1,7 @@
 // QuicGuard Uses s2n-quic for HTTP/3 QUIC transport
 
 mod html;
+mod http2;
 mod http3;
 mod protocol;
 mod s2n_h3;
@@ -100,6 +101,8 @@ impl s2n_quic::provider::tls::s2n_tls::ConfigLoader for DomainCertLoader {
             .map(|s| s.to_string())
             .unwrap_or_default();
 
+        info!("TLS load called for domain: '{}'", domain);
+
         let configs = match self.cache.try_lock() {
             Ok(guard) => guard,
             Err(_) => {
@@ -109,13 +112,26 @@ impl s2n_quic::provider::tls::s2n_tls::ConfigLoader for DomainCertLoader {
                     .expect("failed to build empty TLS config");
             }
         };
+
+        info!("TLS cache has {} entries", configs.len());
+
         match configs.get(&domain) {
             Some(config) => config.clone(),
             None => {
-                error!("TLS config not preloaded for domain '{domain}' — connection will fail");
-                s2n_quic::provider::tls::s2n_tls::config::Builder::new()
-                    .build()
-                    .expect("failed to build empty TLS config")
+                // If domain is empty (no SNI), try to use the first available certificate
+                if domain.is_empty() && !configs.is_empty() {
+                    warn!("No SNI provided, using first available certificate");
+                    configs.values().next().cloned().unwrap_or_else(|| {
+                        s2n_quic::provider::tls::s2n_tls::config::Builder::new()
+                            .build()
+                            .expect("failed to build empty TLS config")
+                    })
+                } else {
+                    error!("TLS config not preloaded for domain '{domain}' — connection will fail");
+                    s2n_quic::provider::tls::s2n_tls::config::Builder::new()
+                        .build()
+                        .expect("failed to build empty TLS config")
+                }
             }
         }
     }
@@ -169,9 +185,13 @@ fn build_tls_server(
 #[derive(Parser, Debug)]
 #[command(author, version, about = "QuicGuard")]
 struct Args {
-    /// Listen address (IP:port)
+    /// Listen address for HTTP/3 (UDP)
     #[arg(short, long, default_value = "0.0.0.0:4433")]
     listen: SocketAddr,
+
+    /// Listen address for HTTP/2 (TCP) - enables Alt-Svc upgrade to HTTP/3
+    #[arg(long, default_value = "0.0.0.0:4434")]
+    listen_tcp: SocketAddr,
 
     /// TUN device name
     #[arg(short, long, default_value = "quicguard0")]
@@ -504,6 +524,15 @@ async fn run_server(args: Args) -> Result<()> {
                     }
                 }
             }
+        }
+    });
+
+    // Start HTTP/2 TCP server for Alt-Svc upgrade
+    let proxy_state_http2 = Arc::clone(&proxy_state);
+    let tcp_listen = args.listen_tcp;
+    tokio::spawn(async move {
+        if let Err(e) = http2::start_http2_server(tcp_listen, proxy_state_http2).await {
+            error!("HTTP/2 server error: {}", e);
         }
     });
 
